@@ -64,19 +64,21 @@ class Transcriber:
     def __init__(self, config):
         self.config = config
 
-    def transcribe(self, path, duration, stop):
+    def transcribe(self, path, duration, stop, workdir=None):
         check_cancel(stop)
         if not self.config['api_url'] or not self.config['model']:
             raise ValueError('Set whisper.api_url and whisper.model for your transcription provider')
         key = os.environ.get(self.config['api_key_env'],'')
         if not key:
             raise ValueError(f'Set {self.config["api_key_env"]} securely in the environment for transcription')
-        # Drive downloads have no reliable extension. A lossless ASR copy also
+        # Direct downloads have no reliable extension. A lossless ASR copy also
         # avoids unsupported input containers; the original remains the render audio.
         path = Path(path).resolve()
-        upload = path.parent/'transcription.flac'
+        work = Path(workdir).resolve() if workdir else path.parent
+        work.mkdir(parents=True,exist_ok=True)
+        upload = work/'transcription.flac'
         run_ffmpeg(['-i',str(path),'-map','0:a:0','-vn','-ac','1','-ar','16000',
-                    '-c:a','flac',str(upload)],path.parent,stop,duration,lambda _:None,'Prepare API audio')
+                    '-c:a','flac',str(upload)],work,stop,duration,lambda _:None,'Prepare API audio')
         try:
             if upload.stat().st_size > 24_000_000:
                 raise ValueError('Transcription audio exceeds the API upload limit (24 MB); use a shorter voiceover')

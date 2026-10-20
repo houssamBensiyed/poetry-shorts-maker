@@ -7,45 +7,11 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 from app.config import load_config
-from app.drive import file_id
-from app.sheets import Sheets, Job
 from app.state import RunLock
 from app.transcription import Transcriber
 from app.timeline import Word
-from app.google_client import retry
 from app.video_builder import Cancelled, run_ffmpeg
 from api import create_app
-
-
-@pytest.mark.parametrize('link',[
-    'https://drive.google.com/file/d/1234567890abc/view?usp=sharing',
-    'https://drive.google.com/open?id=1234567890abc',
-    'https://drive.google.com/uc?export=download&id=1234567890abc',
-    '1234567890abc'])
-def test_drive_url(link):
-    assert file_id(link)=='1234567890abc'
-
-@pytest.mark.parametrize('link',['https://evil.example/file/d/1234567890abc','https://drive.google.com/drive/folders/foo','bad'])
-def test_invalid_drive_url(link):
-    with pytest.raises(ValueError): file_id(link)
-
-
-def test_sheet_uses_row_positions_and_raw_values():
-    class FakeWorksheet:
-        def get_all_values(self):
-            return [['Error','Status','ID','Output Link','Voice Drive Link'],
-                    ['','NOT_PROCESSED','duplicate','','link-a'],[],
-                    ['','COMPLETED','duplicate','','link-b']]
-        def batch_update(self,body,**kwargs):
-            self.body,self.kwargs=body,kwargs
-    sheet = Sheets.__new__(Sheets)
-    sheet.sheet,sheet.stop=FakeWorksheet(),None
-    jobs = sheet.jobs()
-    assert [j.row for j in jobs]==[2,4]
-    sheet.update(jobs[1],'FAILED',error='=formula')
-    assert sheet.sheet.body[0]['range']=='B4'
-    assert sheet.sheet.body[2]['range']=='A4'
-    assert sheet.sheet.kwargs['value_input_option']=='RAW'
 
 
 def test_cross_process_lock_released():
@@ -58,16 +24,6 @@ def test_cross_process_lock_released():
     lock.release()
     result=subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,check=True)
     assert result.stdout.strip()=='True'
-
-
-def test_bounded_retry(monkeypatch):
-    calls=[]
-    monkeypatch.setattr('app.google_client.time.sleep',lambda _:None)
-    def fail():
-        calls.append(1)
-        raise TimeoutError('temporary')
-    with pytest.raises(TimeoutError): retry(fail)
-    assert len(calls)==4
 
 
 def test_api_auth_and_shared_processor(monkeypatch):

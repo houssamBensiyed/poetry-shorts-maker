@@ -19,7 +19,7 @@ def test_dashboard_opens_and_reports_configuration_error(tmp_path):
             await pilot.click('#start')
             await pilot.pause(.5)
             assert p.status()['status']=='error'
-            assert 'spreadsheet_id' in p.status()['error']
+            assert 'table_id' in p.status()['error']
             assert app.query_one('#start',Button).disabled is False
             await pilot.click('#exit')
         p.close()

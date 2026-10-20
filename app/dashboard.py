@@ -59,7 +59,7 @@ class Dashboard(App):
 
     def on_mount(self):
         self.set_interval(.2,self.refresh_display)
-        log.info('Dashboard ready. Configure Google settings and add footage, then Start Processing.')
+        log.info('Dashboard ready. Configure Baserow settings and add footage, then Start Processing.')
         self.refresh_display()
 
     def refresh_display(self):
@@ -101,7 +101,7 @@ class Dashboard(App):
             self.processor.refresh()
             log.info('Job counts refreshed')
         except Exception as exc:
-            log.exception('Cannot refresh Google Sheets')
+            log.exception('Cannot refresh Baserow')
             self.processor.state.update(status='error',error=str(exc)[:1000],stage='Refresh failed')
 
     def action_request_exit(self):

@@ -16,3 +16,9 @@ logs/*
 .env
 
 .cache/
+
+buffer/voiceovers/*
+!buffer/voiceovers/.gitkeep
+
+buffer/images/*
+!buffer/images/.gitkeep

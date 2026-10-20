@@ -1,136 +1,109 @@
 # Poetry Shorts Maker — AI Video Builder
 
-Turn voiceovers in Google Drive into vertical videos using your own background clips and images. Google Sheets is the job list. Open the terminal dashboard, press **Start Processing**, and the app handles jobs one at a time. There is no scheduler and no web frontend.
+Use **[Baserow](https://baserow.io)** as your online spreadsheet, paste direct audio links into it, and generate vertical captioned videos on your own computer. No Google Cloud project, Google account, Drive integration, or OAuth setup is required.
 
-**The two independent rules:** sentences of at least three words start new footage; shorter sentences keep the current clip playing. Every sentence gets captions. Words appear progressively, and the completed caption stays visible through silence until the next sentence starts.
+The workflow is:
 
-## 1. Install Python and FFmpeg
+**Baserow audio + image tables → download audio and randomly selected images → local buffers → transcription API + FFmpeg → upload MP4 to Cloudinary → save its URL and mark the audio row DONE.**
 
-Install **Python 3.11 or newer** from [python.org](https://www.python.org/downloads/). On Windows, select “Add Python to PATH” during installation.
+Jobs run sequentially only when you press Start Processing or send an authenticated HTTP trigger. There is no scheduler, database server, or web frontend to install.
 
-Install **FFmpeg**, including `ffprobe`, with the **libass** subtitle filter and **libx264** encoder:
+**Core rules:** sentences of at least three words start new footage; one- and two-word sentences keep the current footage playing uninterrupted. Every sentence gets captions. Words appear progressively at their timestamps, and the completed caption stays visible through silence until the next sentence begins.
 
-- Ubuntu/Debian: `sudo apt install ffmpeg`
-- macOS with Homebrew: `brew install ffmpeg`
-- Windows: install a full FFmpeg build linked from [ffmpeg.org/download.html](https://ffmpeg.org/download.html) and add its `bin` folder to PATH.
+## 1. Install Docker
 
-Open a terminal and check:
+Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) on Windows/macOS, or Docker Engine with the Compose plugin on Linux. Start Docker and open a terminal in this project folder.
 
-```sh
-python --version
-ffmpeg -version
-ffprobe -version
-```
-
-Open the repository folder in your terminal. All subsequent commands run there:
+The container includes **Python 3.13**, FFmpeg/FFprobe with libass/H.264, Special Elite, and the pinned Python dependencies. You do not need Python or FFmpeg installed on your computer. Transcription uses your API provider; no model or GPU is required.
 
 ```sh
-python -m venv .venv
+docker compose build dashboard
 ```
 
-Activate it on macOS/Linux:
+On Linux, match your account's file ownership before running containers:
 
 ```sh
-source .venv/bin/activate
+export LOCAL_UID=$(id -u)
+export LOCAL_GID=$(id -g)
 ```
 
-Or Windows PowerShell:
+Docker Desktop normally works with the defaults. The app runs as a non-root user.
 
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
-Install the tested dependency versions:
+If your corporate/cloud network intercepts HTTPS and the build reports a certificate error, use your administrator-approved CA bundle without disabling verification:
 
 ```sh
-python -m pip install -r requirements.lock
+docker build --secret id=build_ca_bundle,src=/path/to/approved-ca-bundle.pem -t poetry-shorts-maker:local .
 ```
 
-`requirements.txt` lists the supported dependency ranges; `requirements.lock` records the exact versions tested on Python 3.12/Linux. If a different supported platform cannot install those exact versions, use `python -m pip install -r requirements.txt`, then run the tests below.
+The bundle is used only during installation and is not copied into the image. A proxy intercepting runtime HTTP clients also requires the trusted CA to be configured for those clients.
 
-For the prepared Codex cloud machine, activate the existing environment with `source /workspace/poetry-shorts-maker/.venv/bin/activate` and work in `/workspace/poetry-shorts-maker`.
+## 2. Create two Baserow tables
 
-## 2. Set up Google access
+1. Create an account at **https://baserow.io**.
+2. Create a database and an audio-job table named `Video Jobs`.
+3. Add these fields with the exact names below. Use ordinary editable fields, not formulas.
 
-In [Google Cloud Console](https://console.cloud.google.com/), create or select a project. Under **APIs & Services → Library**, enable both **Google Sheets API** and **Google Drive API**.
+| Field | Recommended Baserow type | Example |
+|---|---|---|
+| ID | Single line text | 009 |
+| Audio URL | URL | https://your-file-host.example/voiceover.wav |
+| Status | Single line text | NOT_PROCESSED |
+| Output File | Single line text | Leave empty; the app records the local MP4 path |
+| Output URL | URL | Leave empty; the app records the uploaded Cloudinary link |
+| Error | Long text | Leave empty |
 
-Choose one authentication method:
+`Status` may alternatively be a Single select field with all four options: `NOT_PROCESSED`, `PROCESSING`, `DONE`, `FAILED`. Existing legacy `COMPLETED` rows are still treated as finished and skipped. Single line text is simpler to configure. Use these exact uppercase values. Blank/unrecognized statuses are skipped with a warning.
 
-### Option A: Service account with a Google Workspace Shared Drive
+The `ID` field is just your display label; duplicates are allowed. Updates use Baserow's internal row ID, so changing the row order will not send an update to the wrong record. Avoid editing/deleting pending rows during a run, because the app takes a snapshot when it starts.
 
-1. Open **IAM & Admin → Service Accounts → Create service account**.
-2. Open the account, select **Keys → Add key → Create new key → JSON**.
-3. Save the downloaded JSON as `credentials/service-account.json`. Keep it private.
-4. Find `client_email` in that file. Share the spreadsheet with that email as **Editor**.
-5. Give that account permission to read the input voiceover files.
-6. Add the service account to your **Shared Drive** with permission to upload into the output folder. Your Workspace administrator may need to do this.
-
-**A service account has no personal Drive storage quota.** Merely sharing a folder in a personal “My Drive” with it does not make uploads work. Use a Workspace Shared Drive, or choose Option B.
-
-### Option B: Sign in to your own Google account (personal My Drive supported)
-
-1. In the Cloud Console, configure the OAuth consent screen. If the app is in Testing mode, add your Google account as a test user.
-2. Under **APIs & Services → Credentials**, create an **OAuth client ID → Desktop app**.
-3. Download the client JSON and save it as `credentials/oauth-client.json`.
-4. On your own computer, where a browser can open, run this one-time helper:
-
-   ```sh
-   python authorize_google.py
-   ```
-
-5. Sign in and approve Sheets and Drive access. The helper writes `credentials/google-user.json`.
-6. Set `google.credentials_file: credentials/google-user.json` in `config.yaml`.
-
-For a cloud machine, securely place the resulting token file in its `credentials` directory; never paste it into chat or commit it. OAuth test-mode refresh tokens may expire after seven days; reauthorize or configure the OAuth app appropriately. Both authentication methods refresh access tokens automatically.
-
-All files under `credentials/` are ignored by Git. Do not place credential values in YAML. Google permissions determine which input files can be read and who can view outputs; the app never makes uploads public.
-
-## 3. Prepare the spreadsheet
-
-Put these exact headers in the first row (their order may vary):
-
-| ID | Voice Drive Link | Status | Output Link | Error |
-|---|---|---|---|---|
-| 009 | https://drive.google.com/file/d/YOUR_FILE_ID/view | NOT_PROCESSED | | |
-
-Use one row per voiceover. `ID` is a display label, not a unique database key; duplicate labels are supported. The app updates the actual worksheet row. **Do not sort, insert, or delete rows while a run is active.** It takes a snapshot of pending row positions when a run begins.
-
-Supported statuses are `NOT_PROCESSED`, `PROCESSING`, `COMPLETED`, and `FAILED`. Only `NOT_PROCESSED` rows are selected. Unknown statuses are logged and skipped.
-
-In `config.yaml`, set:
+4. Create a **separate table** named `Images`, with an optional `ID` text field and a required **`Image URL`** URL field. Put one direct image link in each row. No status column is needed for images: they are reusable.
+5. In Baserow settings, open **Database tokens**, create a token, and grant **Read + Update** on `Video Jobs` and **Read** on `Images`. Create/delete permissions are not needed.
+6. Find the numeric **table IDs** in each table URL or Baserow's generated API documentation. Use table IDs, not database or view IDs.
+7. Set both IDs in `config.yaml`:
 
 ```yaml
-google:
-  credentials_file: credentials/service-account.json  # or credentials/google-user.json
-  spreadsheet_id: YOUR_SPREADSHEET_ID
-  worksheet_name: Sheet1
-  output_drive_folder_id: YOUR_FOLDER_ID
+baserow:
+  api_url: https://api.baserow.io
+  table_id: 123456        # Video Jobs
+  images_table_id: 654321 # Images
+  api_key_env: BASEROW_API_TOKEN
 ```
 
-The spreadsheet ID is between `/d/` and `/edit` in its URL. The folder ID is after `/folders/` in the output folder URL. Input links can use `/file/d/ID/view`, `/open?id=ID`, or `/uc?id=ID`. Bare file IDs are accepted too.
+`api_url` is the Baserow server root, not the browser table link. Self-hosted Baserow can use its HTTPS server URL. No Google project or service-account JSON file is involved.
 
-## 4. Add footage and check the font
+## 3. Set up Cloudinary and your transcription provider
 
-Place videos in `footage/videos/` and images in `footage/images/`. Supported extensions:
+Create an account at **[Cloudinary](https://cloudinary.com)**. In its dashboard/API Keys settings, find your **cloud name**, **API key**, and **API secret**. Set the cloud name in YAML:
 
-- Videos: `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`, `.m4v`
-- Images: `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`
+```yaml
+cloudinary:
+  cloud_name: "YOUR_CLOUD_NAME"
+  api_key_env: CLOUDINARY_API_KEY
+  api_secret_env: CLOUDINARY_API_SECRET
+  folder: poetry-shorts
+  chunk_mb: 10
+  timeout_seconds: 120
+```
 
-At least one readable item is required. Corrupted files are skipped with a warning. Use footage you have permission to use.
+No buckets, IAM policies, Google credentials, or upload preset are needed. The app uses signed video uploads. The API secret stays in the application process and is used to sign requests; it is never sent in an upload request. Uploaded videos use **public HTTPS delivery URLs**. Cloudinary account storage/bandwidth/file-size limits still apply; check your plan for your intended video sizes.
 
-**Special Elite is included** at `assets/fonts/SpecialElite-Regular.ttf`, with its Apache 2.0 license. If it is missing, restore it from this repository or [Google Fonts](https://fonts.google.com/specimen/Special+Elite). You do not need to install the font system-wide; FFmpeg loads the supplied file. If changing fonts, set both `font_file` and the font's internal `font_name` in YAML.
+Copy `.env.example` to `.env` in the project folder. Open `.env` in a text editor and enter your values:
 
-## 5. Configure quality, Whisper, and captions
+```dotenv
+BASEROW_API_TOKEN=your_baserow_database_token
+CLOUDINARY_API_KEY=your_cloudinary_api_key
+CLOUDINARY_API_SECRET=your_cloudinary_api_secret
+WHISPER_API_KEY=your_transcription_provider_key
+VIDEO_BUILDER_API_KEY=your_private_http_trigger_key
+```
 
-Edit `config.yaml` with a text editor; keep YAML indentation consistent. Paths are relative to that file, regardless of the terminal's current directory.
+The HTTP trigger key is needed only if you run the optional API. `.env` is ignored by Git and excluded from the Docker image. Never share or commit it. Compose passes the keys to the containers. Native Python users should export these variables in their shell; the app itself does not read `.env` files.
 
-Defaults are vertical 1080×1920, 30 FPS, H.264 video, AAC voiceover audio, and Special Elite white captions with a black outline. Footage is scaled proportionally and center-cropped, never stretched. Source footage audio is discarded. Voiceover playback speed and silence are preserved; audio is encoded to AAC, not copied bit-for-bit.
-
-Transcription uses **your hosted OpenAI-compatible API**, not a local model. No Whisper model or weights are downloaded, and no GPU is needed. Fill in your provider's exact HTTPS endpoint and model name:
+In `config.yaml`, set your transcription provider's exact HTTPS endpoint and model:
 
 ```yaml
 whisper:
-  model: "YOUR_PROVIDER_MODEL_NAME"
+  model: "YOUR_PROVIDER_MODEL"
   api_url: "https://YOUR_PROVIDER_HOST/v1/audio/transcriptions"
   api_key_env: WHISPER_API_KEY
   language: null
@@ -138,151 +111,150 @@ whisper:
   timeout_seconds: 120
 ```
 
-Set `WHISPER_API_KEY` securely in the process environment; do not put the key in YAML or chat. On macOS/Linux:
+You selected **Naga (naga.ac)**. Its exact endpoint/model and timestamp support have not yet been verified, so those values are deliberately blank in the supplied configuration.
 
-```sh
-read -rsp 'Transcription API key: ' WHISPER_API_KEY
-export WHISPER_API_KEY
+The provider must accept Bearer-authenticated multipart requests with `response_format=verbose_json` and `timestamp_granularities[]=word` plus `timestamp_granularities[]=segment`. It must return `text`, `words` (word/start/end), and `segments` (text/start/end). Not every OpenAI-compatible audio model supports these fields. Missing timestamps cause a clear failure; the app never invents them.
+
+Only a temporary mono 16 kHz FLAC copy is submitted to the transcription API. The original buffered audio is used for the final video. The upload is limited to 24 MB; the provider may impose a smaller limit or charge for requests/retries. There is no local model fallback.
+
+## 4. Add your audio links and footage
+
+Put an accessible **direct HTTP/HTTPS audio URL** in each audio row's `Audio URL` field, and set its status to `NOT_PROCESSED`. The host can be any service that supplies the actual file, including an object-storage URL, your own server, or a signed download link. Normal redirects are followed.
+
+A browser preview/share page is not necessarily a download link. Links that return HTML/login pages, require browser cookies, or require a private provider SDK will not work. Use the provider's direct-download or signed URL instead. The application does not bypass a host's access controls. The file must contain audio that FFprobe can read; the URL does not need a file extension.
+
+Downloads are streamed to disk and finalized only after completion. The original audio bytes are kept in **`buffer/voiceovers/`**, even after successful processing.
+
+The app reads the separate `Images` table and logs the total row count and number of distinct usable links. After transcription determines the footage intervals, it randomly selects from the full image pool, avoiding immediate repetition when possible. **Only selected images are downloaded** into `buffer/images/row-…/`; an image reused within the same video is downloaded once. Duplicate links in the image table count once. All downloads finish and image decoding is verified before rendering begins. Broken selected images fail that job visibly; they are not silently substituted.
+
+Images must be still JPEG, PNG, WebP or BMP files; animated images are rejected. Originals stay buffered after success/failure. Each new job downloads its selected images afresh, so a changed URL is not silently served from a stale cross-job cache. You can clear old buffer files when no run needs them. Only the finished MP4 is uploaded to Cloudinary; the buffered source images/audio are not uploaded there.
+
+Optional download settings:
+
+```yaml
+downloads:
+  timeout_seconds: 60
+  max_file_mb: 256
 ```
 
-The provider must accept a Bearer-authenticated multipart transcription request with `response_format=verbose_json` and `timestamp_granularities[]=word` plus `timestamp_granularities[]=segment`. The API must return `text`, `words` (word/start/end), and `segments` (text/start/end). Merely accepting an OpenAI-compatible request does not guarantee timestamp support: choose a model that supports these fields. Missing or inconsistent timestamps cause a clear failure, never estimated timing.
+By default, footage comes from the online `Images` table. Optionally set `footage.use_local_assets: true` to also include videos from `footage/videos/` and images from `footage/images/` in the random selection pool:
 
-A temporary mono 16 kHz FLAC copy is sent to the API. This preserves the voiceover clock and avoids unsupported downloaded file extensions. The original downloaded audio is still used for the final video, with its silence and playback speed unchanged. The app conservatively limits the transcription upload to 24 MB and reports an error for longer files; it does not silently trim them. Your provider may impose a smaller limit or charge for transcription. Repeated transient requests may also be billed. There is no local inference fallback.
+- Videos: MP4, MOV, MKV, WebM, AVI, M4V.
+- Images: PNG, JPG/JPEG, WebP, BMP.
 
-Some APIs omit punctuation from individual words. The app restores punctuation from the full transcript only when every letter/digit aligns with the timestamped words; otherwise it fails rather than silently changing the text. Sentence grouping still crosses API segment boundaries.
+The Baserow image table must contain at least one usable link. If local assets are enabled, the local folders must also contain a valid item. Corrupt local files are skipped with warnings. Special Elite is bundled in `assets/fonts/` with its license. No online font service is used.
 
-Other useful settings:
+## 5. Start the dashboard
 
-- `footage.random_seed`: an integer for reproducible choices, or `null` for randomness. Reproducibility assumes unchanged source files and transcription.
-- `footage.minimum_words_for_new_clip`: defaults to **3**, implementing the specified short-sentence behavior.
-- `footage.avoid_immediate_repetition`: defaults to `true`; repetition is allowed with only one source.
+```sh
+docker compose run --rm dashboard
+```
+
+Use an interactive terminal, not detached mode. Buttons support mouse clicks and Tab/Enter:
+
+- **Refresh Jobs:** read Baserow job counts without downloading or rendering.
+- **Start Processing:** process all pending rows sequentially.
+- **Stop Processing:** prevent new jobs and cancel the current job safely. FFmpeg stops promptly; HTTP operations stop at the next chunk/request boundary or timeout. The UI remains responsive.
+- **View Logs:** focus live logs and display the full log-file location.
+- **Exit** or **q/Ctrl+C:** confirm stopping an active run before exiting.
+
+The dashboard opens before credentials are configured, and reports missing settings when you start/refresh. Rendering progress comes from FFmpeg timestamps; other stages use an indeterminate indicator.
+
+The app marks an audio row `PROCESSING`, downloads/checks its audio, transcribes, plans its random image choices, downloads the selected images, renders and uploads the MP4. **Only after a complete upload is confirmed** does it update that same row to **`DONE`**, set **`Output URL`** to the uploaded HTTPS link, and keep **`Output File`** as a local path such as `output/row-42-….mp4`. The URL is clickable from Baserow; the local copy remains on the computer running Docker. Uploads use 10 MB chunks with bounded retries and progress messages in the live logs. Failures are marked `FAILED` where possible, with a readable `Error`; the next pending row still runs.
+
+## 6. Files and configuration
+
+These folders remain on your computer when containers are rebuilt or removed:
+
+| Folder | Contents |
+|---|---|
+| `buffer/voiceovers/` | Original downloaded audio, retained after success/failure |
+| `buffer/images/` | Selected images downloaded for each video, retained after success/failure |
+| `output/` | Completed MP4 files |
+| `temp/` | Failed-job diagnostics; successful render work directories are removed |
+| `logs/` | Rotating logs (`video_builder.log`, 5 MB × 4 files) |
+| `footage/` | Your reusable background assets |
+
+Compose mounts `config.yaml` and footage read-only, and buffer/output/temp/logs read-write. Credentials and personal media are excluded from the image build context. Logs include job IDs and file paths; avoid sharing them indiscriminately. Signed input URLs may appear in the authenticated dashboard/API state but are not intentionally written into download error messages.
+
+Useful YAML settings:
+
+- `video.width`/`height`/`fps`: default 1080×1920, 30 FPS; dimensions must be even.
+- `video.crf`: default 20; smaller means higher quality/larger output.
+- `video.preset`/`threads`: render speed and CPU use.
+- `footage.minimum_words_for_new_clip`: default **3**, preserving short-sentence continuity.
+- `footage.random_seed`: integer for reproducible plans, or `null` for randomness.
 - `captions.position`: `top`, `center`, or `bottom`.
-- `captions.font_size`, `safe_margin`, `max_words_per_line`, `color`, `outline_color`, `outline_width`: appearance and wrapping. Font size automatically shrinks when necessary to fit the safe area; an impossible layout fails clearly.
-- `video.crf`: lower is higher quality/larger files; default 20.
-- `video.preset`: faster settings trade file size for render speed.
-- `video.threads`: bounds FFmpeg CPU use; default 2.
+- `captions.font_size`, `safe_margin`, `max_words_per_line`, colors and outline: caption appearance.
+- `paths.buffer`, `image_buffer`, `output`, `temp`, `logs`: local directories, relative to `config.yaml`.
 
-This version deliberately requires `animation: word_by_word`, `persist_during_silence: true`, and `word_timestamps: true`. Disabling them would violate the core caption behavior and is rejected.
+Captions always use progressive word reveal and persistence during silence. Disabling those settings is rejected. The final MP4 uses H.264 video, AAC voiceover audio, yuv420p, and fast-start metadata. AAC encoding preserves timing and meaningful silence but is not bit-for-bit audio copying. Footage audio is discarded.
 
-## 6. Open the dashboard
+Rebuild after code/dependency changes with `docker compose build dashboard`. Editing YAML or adding footage does not require rebuilding; restart the running entry point to reload settings.
 
-With the virtual environment active:
+## 7. Optional HTTP automation
 
-```sh
-python main.py
-```
-
-Click buttons with the mouse, or use Tab and Enter:
-
-- **Refresh Jobs** reads counts without processing.
-- **Start Processing** selects pending jobs and processes them sequentially.
-- **Stop Processing** requests cancellation and prevents the next job from starting. FFmpeg terminates promptly. Google operations stop between requests/chunks (network timeout is 30 seconds); Transcription stops between API requests; an in-flight request waits for its response or the configured timeout (120 seconds by default). The dashboard stays responsive while waiting.
-- **View Logs** focuses the live log panel and shows the full log-file location.
-- **Exit** or **q/Ctrl+C** asks for confirmation when this dashboard owns an active run.
-
-The dashboard can open before Google is configured. Start/Refresh then reports the missing settings clearly. Rendering progress comes from FFmpeg media timestamps, weighted across normalization (first half) and final caption/audio encoding (second half). Other stages show indeterminate progress.
-
-Outputs are saved in `output/` and uploaded to your Drive folder. The spreadsheet receives the output link and `COMPLETED` status. A failure marks the row `FAILED` where possible and processing continues with the next row.
-
-Live logs and `logs/video_builder.log` share the same logger. Files rotate at 5 MB with three backups. Detailed footage/caption decisions are DEBUG entries in the file log. Treat logs as private: they contain job information and Drive file links, but the app does not deliberately log credential contents or API keys.
-
-## 7. Optional HTTP triggering
-
-The API is independent of the terminal dashboard and uses the exact same processing engine. It does not start processing until requested.
-
-Set a private API key in the environment, **not** in YAML. On macOS/Linux, read it without displaying it or placing it in shell history:
+Set `VIDEO_BUILDER_API_KEY` in `.env`, then:
 
 ```sh
-read -rsp 'API key: ' VIDEO_BUILDER_API_KEY
-export VIDEO_BUILDER_API_KEY
+docker compose --profile api up -d api
 ```
 
-On Windows PowerShell 7, you can use `$env:VIDEO_BUILDER_API_KEY = Read-Host -MaskInput 'API key'`.
+Both endpoints require an `X-API-Key` header:
 
-Start the server:
+- `GET /run`: return HTTP 202 immediately and start pending jobs; return `already_running` if a run is active.
+- `GET /status`: report real status, current job and progress.
 
-```sh
-python api.py
-```
-
-It binds to localhost on port 8000 by default. Both endpoints require `X-API-Key`. From another terminal with the same key configured:
+Set the same key in your client's environment, then use:
 
 ```sh
 curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" http://127.0.0.1:8000/status
 curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" http://127.0.0.1:8000/run
 ```
 
-`/run` returns HTTP 202 immediately with `accepted`, or `already_running` if a run owns the lock. `/status` reports real progress and errors. A lock keyed by spreadsheet identity prevents the API and TUI (or another process using this app) from running that spreadsheet simultaneously on the same machine. An idle instance reads the active instance's shared status. Stop the process that owns a run to cancel it; an observer dashboard's Stop button is disabled. Locks are released by the OS on process exit. There is no distributed lock across different machines: use only one host per spreadsheet.
+A `.env` file read by Compose is not automatically exported into your terminal for curl. Never put the key in a URL.
 
-For remote automation, keep Uvicorn bound to localhost and put a TLS reverse proxy in front of it. Forward `X-API-Key`, restrict callers as appropriate, and disable caching/prefetching of `/run`. Never put keys in query strings. Do not expose an unprotected raw Uvicorn port. Remote proxy provisioning is outside this application.
+The service listens on all interfaces inside the container, but Docker publishes it only on your computer's localhost. To change the host port, set `VIDEO_BUILDER_HTTP_PORT`. Remote access requires your own HTTPS reverse proxy forwarding the header; disable caching/prefetching for `/run`.
 
-## 8. Recover interrupted or failed jobs
+Inspect logs with `docker compose logs -f api`; stop with `docker compose stop api`. The default stop grace period is 180 seconds. Increase it if you increase HTTP request timeouts. Cancellation stops uploads between chunks/retries; a final confirmed upload is still committed to Baserow if Stop arrives with its response.
 
-No failed row is retried automatically. After a crash or forced shutdown, a row can remain `PROCESSING` because the process was unable to contact Sheets. On the next run the app warns about these rows rather than silently processing them twice.
+TUI and API share the same processing engine and a Docker lock volume keyed by Baserow server/table ID. Run them from the **same Compose project**. Do not run a different project, native process, or another computer against the same table simultaneously; this is not a distributed lock. Stop the instance that owns a run to cancel it. An observing dashboard cannot stop the other instance. Do not remove lock volumes during a run.
 
-1. Make sure no instance is still processing that spreadsheet.
-2. Inspect the row's Output Link, Drive folder, and local `output/` folder.
-3. Check `logs/video_builder.log` and the job directory under `temp/`.
-4. If an upload finished but the Sheets update failed, `uploaded.json` contains its URL. Set the row to `COMPLETED` and copy that URL manually; do not render/upload it again.
-5. Otherwise fix the error, set the row's Status to `NOT_PROCESSED`, clear its Error, and press Start Processing.
+## 8. Recovery
 
-Cancelled jobs are marked `FAILED` with a recovery message where Sheets is reachable. Failed directories retain the downloaded voiceover, transcript, plan, ASS subtitles, FFmpeg logs, and failure metadata as available. Partial MP4 files are removed. Successful job directories are cleaned up; the finished local MP4 remains. Original Google Drive voiceovers are never changed or deleted.
+Failed rows are not retried automatically. To retry, fix the problem and set `Status` to `NOT_PROCESSED`, then start again. A retry downloads a fresh copy into the local buffer.
 
-Uploads and Sheets updates cannot be made into one atomic transaction. A network failure exactly as Drive completes an upload can leave a file in Drive without a recorded URL. Inspect the Drive folder before manually retrying to avoid duplicates. Filenames contain the worksheet row and a unique job token.
+After a crash, a row may remain `PROCESSING`. The next run warns about it and skips it. Ensure no process is still running, then inspect the row and local output before resetting it.
 
-## How the timeline works
+A video can render successfully while upload or Baserow update fails. The complete local MP4 is retained:
 
-`app/timeline.py` is pure Python and has no dependency on Google, FFmpeg or Whisper. API word timestamps are validated; missing, unordered, out-of-range, or overlapping sentence timestamps fail rather than being invented.
+- `temp/row-…/rendered.json` records the local output and audio path.
+- `upload.json` records the intended Cloudinary **public ID** before upload begins.
+- `uploaded.json` records a confirmed upload URL/public ID.
+- `failure.json` records the error, local output, and known uploaded URL.
 
-Words are grouped across Whisper segment boundaries using `.`, `?`, `!` (and their full-width equivalents). Text with no sentence-ending punctuation (including a final unpunctuated fragment) is split every **20 words**. A long sentence that ends in punctuation stays intact, even when it crosses Whisper segment boundaries. It is a simple punctuation heuristic, not a language parser: abbreviations can cause extra sentence breaks. Every word is retained.
+If `uploaded.json` exists, copy its URL into `Output URL`, its path into `Output File`, and set `Status` to `DONE` manually. If the network failed exactly when Cloudinary finished uploading, check Cloudinary for the public ID in `upload.json` before retrying: a remote video may exist even if no final response was received. Never assume a timeout means the upload failed. Uploads and Baserow updates cannot be one atomic transaction. Resetting a failed job starts a new render/upload with a new public ID; inspect recovery metadata first to avoid duplicates.
 
-An initial footage item starts at time zero. Each qualifying sentence beginning after zero starts a new interval. Short sentences cause no footage reset. Sources that are too short loop; longer videos get a random valid source offset; images fill their entire interval. Cut boundaries are quantized to output frames, so speech-aligned cuts can differ by up to half a frame. Intervals shorter than a frame may not have a representable visible frame. The final frame count covers the voiceover within one output frame.
+Partial MP4s and incomplete downloads are removed. Failed-job transcripts, plans, subtitles and FFmpeg logs remain in `temp/`; the original audio and selected images remain in their buffers.
 
-Caption events are independent. Each event contains the **same complete prewrapped sentence**, with unrevealed words transparent in both fill and outline. This reserves the final layout while visible words accumulate. It is not karaoke highlighting. ASS timing has centisecond precision, and display is limited by the output frame rate; words with the same representable start time appear together. Before the first word, captions are absent; after it, captions remain until audio end. Silence-only audio produces footage without captions.
+## Timeline behavior
 
-## Testing and project layout
+Timeline planning is pure Python and independent of the online table or file host. Punctuation groups timestamped words across API segment boundaries. A long punctuated sentence stays intact; text without sentence-ending punctuation is split every 20 words. This is a punctuation heuristic, so abbreviations can cause extra breaks. All words are retained.
+
+Initial footage starts at zero. A qualifying sentence begins a new random footage interval; shorter sentences do not cut, restart or freeze it. Long source videos get random valid offsets, short videos loop, and images fill their intervals. Aspect-preserving scale/center crop normalizes resolution and FPS. Shared frame boundaries prevent gaps; the final duration matches the voiceover within one output frame.
+
+Caption layouts are precomputed for the full sentence. Unrevealed words are fully transparent but reserve their layout space, so displayed words do not jump around. This is progressive reveal, not karaoke highlighting. The full sentence stays visible until the next sentence starts; the final caption stays until audio end. ASS timing uses centiseconds and output frame precision. Before the first word, or for silence-only audio, captions can be absent.
+
+## Tests and validation
+
+The Python 3.13 Docker image builds successfully and **67 tests passed inside it**.
 
 ```sh
-python -m pytest -q
+docker compose run --rm --no-deps dashboard python -m pytest -q
 ```
 
-Tests cover the short-sentence threshold, leading short sentences, no qualifying sentences, random repetition, coverage, progressive reveal, silence persistence, timestamp rejection, and final captions. Real FFmpeg tests generate synthetic audio/footage, encode MP4s, inspect FFprobe output and decoded pixel masks to verify progressive visibility, fixed word positions, silence persistence, and final captions. They also exercise looping video and still images. API, mocked Google/Whisper adapters, processor failure recovery, cross-process locking, cancellation, and a headless Textual dashboard are tested without credentials.
+Tests cover timeline rules, real FFmpeg renders with decoded-frame caption checks, downloads through a real local HTTP server, redirects and rejected HTML/oversized/empty files, Baserow pagination/row updates with mocked responses, cancellation, recovery, TUI and authenticated API behavior. An integration test downloads real audio and a randomly selected image through a local HTTP server, retains their buffers, renders a real MP4, submits it to a simulated uploader, and verifies DONE rows are not processed twice. Online Baserow, paid transcription, and Cloudinary use controlled mocks. Upload tests check multipart signatures, chunk ranges/retries, byte preservation, cancellation, missing completion responses, and failure recovery without marking rows DONE.
 
-Core files:
+Live Baserow access still requires both table IDs and your database token. Live Cloudinary uploads require the cloud name, API key and API secret; no real upload has been attempted without them. This environment's proxy currently blocks `api.baserow.io`; its network setting must be applied before live testing. Naga transcription is also unverified until its endpoint/model/key and timestamp support are configured. No claim is made that these external integrations have run successfully.
 
-- `app/timeline.py`, `app/captions.py`: deterministic plans and stable ASS captions.
-- `app/footage.py`, `app/video_builder.py`: media inspection and FFmpeg rendering.
-- `app/transcription.py`: hosted transcription API client and normalized timestamped transcript.
-- `app/sheets.py`, `app/drive.py`, `app/google_client.py`: authenticated Google operations and bounded retries.
-- `app/processor.py`, `app/state.py`: sequential processing, shared state and OS locking.
-- `app/dashboard.py`, `app/logger.py`: interactive UI and rotating/live logs.
-- `main.py`, `api.py`: the two normal entry points.
-- `authorize_google.py`: optional one-time desktop OAuth setup.
-
-## Troubleshooting
-
-| Problem | What to do |
-|---|---|
-| Missing spreadsheet/folder setting | Fill in the IDs in `config.yaml`; use IDs, not full URLs. |
-| Credentials or permission error | Check the configured JSON path, enabled APIs, spreadsheet sharing, and input/output folder permissions. |
-| Drive storage quota error with service account | Use a Workspace Shared Drive or user OAuth. |
-| OAuth token expired/revoked | Move the old user token aside and rerun the desktop authorization helper. |
-| Missing or corrupt audio | Check the input link and read access; download the file yourself and confirm it plays. |
-| Missing word timestamps | Use a provider/model that returns verbose JSON with word and segment timestamps; inspect the retained logs. No replacement timestamps are generated. |
-| Transcription API gets HTTP 401/403 | Check your provider API key, account permissions, and allowed endpoint hostname. |
-| No footage | Add supported videos/images to the configured folders. Read warnings for corrupt files. |
-| Missing font/libass | Restore the supplied font; install a full FFmpeg build with the `ass` filter. |
-| Render fails | Inspect `temp/row-…/*.log` and `plan.json`; retry only after fixing the cause. |
-| Very slow render/transcription | Choose a faster hosted transcription model with timestamp support, a faster video preset, or a lower output resolution. |
-| API refuses to start | Set `VIDEO_BUILDER_API_KEY` in the same terminal that launches it. |
-| Run already active | Check the other TUI/API process; do not delete lock files to bypass an active run. |
-
-Cloud egress needs package registries for installation, your configured transcription API hostname, `sheets.googleapis.com`, `www.googleapis.com`, and `oauth2.googleapis.com` for Google requests. Model-download hosts are not needed. The transcription key belongs to your chosen provider; no OpenAI account is assumed.
-
-### Where Google Drive is used
-
-The Sheet is the job list, not the audio storage. For each pending row, `app/sheets.py` reads the **Voice Drive Link** column. `app/processor.py` passes that row's exact link to `Drive.download`, which extracts its file ID and downloads the audio through authenticated Google Drive API access. The audio goes to your transcription API. After rendering, Drive is used again to upload the MP4 to your configured output folder. Sheets then receives the resulting URL in **Output Link**. A Drive share link alone does not grant this application access to a private file.
-
-### Validation status
-
-Local tests exercise actual FFmpeg rendering and the TUI/API. Google and transcription API tests use controlled fakes, including multipart payload and timestamp validation. No live Google credentials or transcription provider endpoint/model/key were supplied, so external downloads, uploads, Sheet updates, and paid transcription requests have **not** been verified. No local Whisper model is downloaded or used.
+Native development remains possible with Python 3.13, FFmpeg and a virtual environment: install `requirements.lock`, export the required environment variables, then run `python main.py` or `python api.py`. No Google SDK is required.

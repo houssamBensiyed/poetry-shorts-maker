@@ -1,8 +1,18 @@
-google:
-  credentials_file: credentials/service-account.json
-  spreadsheet_id: ""
-  worksheet_name: Sheet1
-  output_drive_folder_id: ""
+baserow:
+  api_url: https://api.baserow.io
+  table_id: 0  # Numeric table ID from your Baserow table URL/API documentation
+  images_table_id: 0  # Separate image table with an Image URL field
+  api_key_env: BASEROW_API_TOKEN
+downloads:
+  timeout_seconds: 60
+  max_file_mb: 256
+cloudinary:
+  cloud_name: ""  # From your Cloudinary dashboard
+  api_key_env: CLOUDINARY_API_KEY
+  api_secret_env: CLOUDINARY_API_SECRET
+  folder: poetry-shorts
+  chunk_mb: 10
+  timeout_seconds: 120
 whisper:
   model: ""  # Your provider's transcription model
   api_url: ""  # Full HTTPS transcription endpoint
@@ -19,6 +29,7 @@ video:
   preset: medium
   threads: 2
 footage:
+  use_local_assets: false  # true adds local videos/images to the random selection pool
   videos_directory: footage/videos
   images_directory: footage/images
   minimum_words_for_new_clip: 3
@@ -37,6 +48,8 @@ captions:
   animation: word_by_word
   persist_during_silence: true
 paths:
+  buffer: buffer/voiceovers
+  image_buffer: buffer/images
   output: output
   temp: temp
   logs: logs

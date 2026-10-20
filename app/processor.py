@@ -1,17 +1,19 @@
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 import logging
 from pathlib import Path
 import shutil
 import threading
 import uuid
-from app.config import check_job_config
+from app.config import check_job_config, ROOT
 from app.state import State, RunLock
-from app.sheets import Sheets
-from app.drive import Drive
+from app.jobs import JobTable
+from app.downloads import Downloader
+from app.images import download_images
+from app.uploads import Uploader
 from app.transcription import Transcriber
 from app.footage import audio_duration, discover
-from app.timeline import sentences_from_words, build_plan
+from app.timeline import sentences_from_words, build_plan, Source
 from app.video_builder import render, check_cancel, Cancelled
 
 log = logging.getLogger('video_builder')
@@ -25,8 +27,8 @@ class Processor:
         self.guard = threading.RLock()
         self.thread = None
         self.refreshing = False
-        # Spreadsheet-wide: different worksheet/config paths cannot run concurrently.
-        self.run_lock = RunLock(config['google']['spreadsheet_id'] or 'unconfigured')
+        # One lock per online table, shared by dashboard and API.
+        self.run_lock = RunLock(config['baserow']['api_url'].rstrip('/')+'/'+str(config['baserow']['table_id']))
         self.transcriber = Transcriber(config['whisper'])
 
     def update(self, **values):
@@ -47,7 +49,7 @@ class Processor:
             if not self.run_lock.acquire():
                 return False
             self.stop_event.clear()
-            self.update(status='processing',stage='Connecting to Google Sheets',error='',render_progress=None)
+            self.update(status='processing',stage='Connecting to Baserow',error='',render_progress=None)
             self.thread = threading.Thread(target=self._run,name='video-processor',daemon=False)
             try:
                 self.thread.start()
@@ -71,10 +73,7 @@ class Processor:
                 return self.status()
             self.refreshing = True
         try:
-            google = self.config['google']
-            if not google['spreadsheet_id']:
-                raise ValueError('Set google.spreadsheet_id in config.yaml')
-            jobs = Sheets(google).jobs()
+            jobs = JobTable(self.config['baserow']).jobs()
             self.state.update(**self._counts(jobs),status='idle',stage='Jobs refreshed',error='')
             return self.status()
         finally:
@@ -84,7 +83,7 @@ class Processor:
     @staticmethod
     def _counts(jobs):
         return dict(pending=sum(j.status=='NOT_PROCESSED' for j in jobs),
-                    completed=sum(j.status=='COMPLETED' for j in jobs),
+                    completed=sum(j.status in {'DONE','COMPLETED'} for j in jobs),
                     failed=sum(j.status=='FAILED' for j in jobs))
 
     def stage(self, name):
@@ -95,8 +94,7 @@ class Processor:
     def _run(self):
         try:
             check_job_config(self.config)
-            sources = discover(self.config['footage'])
-            sheet = Sheets(self.config['google'],self.stop_event)
+            sheet = JobTable(self.config['baserow'],self.stop_event)
             jobs = sheet.jobs()
             self.update(**self._counts(jobs))
             pending = [j for j in jobs if j.status=='NOT_PROCESSED']
@@ -104,11 +102,14 @@ class Processor:
             if stuck:
                 log.warning('%s rows already PROCESSING: inspect output and use documented manual recovery',stuck)
             log.info('Found %d pending jobs',len(pending))
-            drive = Drive(self.config['google'],self.stop_event)
+            sources = [Source(url,'image') for url in sheet.image_urls()] if pending else []
+            if pending and self.config['footage']['use_local_assets']:
+                sources += discover(self.config['footage'])
+            downloader = Downloader(self.config['downloads'],self.stop_event)
             for job in pending:
                 if self.stop_event.is_set():
                     break
-                self._job(job,sheet,drive,sources)
+                self._job(job,sheet,downloader,sources)
             self.update(status='idle',stage='Stopped' if self.stop_event.is_set() else 'Run finished',
                         current_job=None,voiceover='',render_progress=None)
         except Cancelled:
@@ -120,12 +121,13 @@ class Processor:
             with self.guard:
                 self.run_lock.release()
 
-    def _job(self, job, sheet, drive, sources):
+    def _job(self, job, sheet, downloader, sources):
         token = uuid.uuid4().hex
         work = Path(self.config['paths']['temp'])/f'row-{job.row}-{token}'
         work.mkdir(parents=True,exist_ok=False)
         output = Path(self.config['paths']['output'])/f'row-{job.row}-{token}.mp4'
-        audio = work/'voiceover.audio'
+        audio = Path(self.config['paths']['buffer'])/f'row-{job.row}-{token}.audio'
+        completed_output = ''
         uploaded_url = ''
         marked = False
         self.update(current_job=job.id or f'Row {job.row}',voiceover=job.voice_link,
@@ -134,10 +136,10 @@ class Processor:
             sheet.update(job,'PROCESSING',stop=self.stop_event)
             marked = True
             self.stage('Downloading')
-            drive.download(job.voice_link,audio)
+            downloader.download(job.voice_link,audio)
             duration = audio_duration(audio)
             self.stage('Transcribing')
-            transcript = self.transcriber.transcribe(audio,duration,self.stop_event)
+            transcript = self.transcriber.transcribe(audio,duration,self.stop_event,work)
             (work/'transcript.json').write_text(json.dumps(asdict(transcript),ensure_ascii=False,indent=2))
             sentences = sentences_from_words(transcript.words,duration)
             log.info('Detected %d sentences',len(sentences))
@@ -148,6 +150,16 @@ class Processor:
                 log.debug('Sentence %r has %d words: %s',sentence.text,len(sentence.words),
                           'switching footage' if len(sentence.words)>=f['minimum_words_for_new_clip'] else 'keeping current footage')
             log.info('Created %d footage intervals',len(plan.footage))
+            remote_urls = list(dict.fromkeys(interval.source.path for interval in plan.footage
+                                             if interval.source.path.startswith(('http://','https://'))))
+            if remote_urls:
+                self.stage('Downloading selected images')
+                image_directory = Path(self.config['paths']['image_buffer'])/f'row-{job.row}-{token}'
+                selected = download_images(remote_urls,image_directory,downloader,self.stop_event)
+                mapping = dict(zip(remote_urls,selected))
+                plan = replace(plan,footage=tuple(replace(interval,source=mapping.get(interval.source.path,interval.source))
+                                                 for interval in plan.footage))
+                log.info('Downloaded %d distinct selected images to the local buffer',len(selected))
             self.stage('Generating captions')
             for caption in plan.captions:
                 log.debug('Caption %r persists until %.3fs',caption.sentence.text,caption.end)
@@ -160,14 +172,25 @@ class Processor:
                     log.info('Rendering: %.0f%%',value)
                     last[0] = bucket
             render(plan,audio,output,work,self.config,self.stop_event,progress)
-            self.stage('Uploading')
-            uploaded_url = drive.upload(output)
-            # Commit a completed upload even if Stop arrives now; do not orphan its URL.
-            self.update(stage='Updating Google Sheets',render_progress=None)
-            (work/'uploaded.json').write_text(json.dumps({'url':uploaded_url,'row':job.row,'output':str(output)}))
-            sheet.update(job,'COMPLETED',output=uploaded_url)
+            # The MP4 is already validated and complete; preserve it if the table update fails.
+            completed_output = str(output.relative_to(ROOT)) if output.is_relative_to(ROOT) else str(output)
+            (work/'rendered.json').write_text(json.dumps({'output':completed_output,'row':job.row,'audio':str(audio)}))
+            self.stage('Uploading to Cloudinary')
+            uploader = Uploader(self.config['cloudinary'],self.stop_event)
+            (work/'upload.json').write_text(json.dumps({'public_id':uploader.public_id(output),'output':completed_output,'row':job.row}))
+            last_upload = [-1]
+            def upload_progress(value):
+                if int(value)//10 > last_upload[0]:
+                    log.info('Upload: %.0f%%',value)
+                    last_upload[0] = int(value)//10
+            uploaded = uploader.upload(output,upload_progress)
+            uploaded_url = uploaded['url']
+            (work/'uploaded.json').write_text(json.dumps({**uploaded,'output':completed_output,'row':job.row}))
+            # Commit an acknowledged upload even if Stop arrived with its final response.
+            self.update(stage='Updating Baserow',render_progress=None)
+            sheet.update(job,'DONE',output=completed_output,uploaded_url=uploaded_url)
             self.update(completed=self.state.snapshot()['completed']+1)
-            log.info('Job row %s completed: %s',job.row,uploaded_url)
+            log.info('Job row %s completed: %s',job.row,completed_output)
             try:
                 shutil.rmtree(work)
             except OSError:
@@ -179,13 +202,13 @@ class Processor:
             else:
                 log.exception('Job row %s failed; diagnostics retained at %s',job.row,work)
             error = str(exc)[:1000]
-            (work/'failure.json').write_text(json.dumps({'row':job.row,'error':error,'uploaded_url':uploaded_url}))
-            # If an upload succeeded, retain both local output and URL for manual reconciliation.
-            if not uploaded_url:
+            (work/'failure.json').write_text(json.dumps({'row':job.row,'error':error,'output':completed_output,'uploaded_url':uploaded_url,'audio':str(audio)}))
+            # Keep a complete rendered MP4 for recovery if the table could not be updated.
+            if not completed_output:
                 output.unlink(missing_ok=True)
             try:
                 if marked:
-                    sheet.update(job,'FAILED',output=uploaded_url,error=error)
+                    sheet.update(job,'FAILED',output=completed_output,uploaded_url=uploaded_url,error=error)
             except Exception:
                 log.exception('Could not update failed row %s; use manual recovery in README',job.row)
             self.update(failed=self.state.snapshot()['failed']+1,error=error)

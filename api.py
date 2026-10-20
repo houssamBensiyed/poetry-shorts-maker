@@ -51,7 +51,8 @@ def main():
         app = create_app(config)
     except (ValueError,OSError) as exc:
         raise SystemExit(f'Configuration error: {exc}') from exc
-    uvicorn.run(app,host=config['server']['host'],port=config['server']['port'])
+    uvicorn.run(app,host=os.environ.get('VIDEO_BUILDER_HOST',config['server']['host']),
+                port=int(os.environ.get('VIDEO_BUILDER_PORT',config['server']['port'])))
 
 
 if __name__=='__main__':
