@@ -12,7 +12,7 @@ from app.downloads import Downloader
 from app.images import download_images
 from app.uploads import Uploader
 from app.transcription import Transcriber
-from app.footage import audio_duration, discover
+from app.footage import audio_duration
 from app.timeline import sentences_from_words, build_plan, Source
 from app.video_builder import render, check_cancel, Cancelled
 
@@ -103,8 +103,6 @@ class Processor:
                 log.warning('%s rows already PROCESSING: inspect output and use documented manual recovery',stuck)
             log.info('Found %d pending jobs',len(pending))
             sources = [Source(url,'image') for url in sheet.image_urls()] if pending else []
-            if pending and self.config['footage']['use_local_assets']:
-                sources += discover(self.config['footage'])
             downloader = Downloader(self.config['downloads'],self.stop_event)
             for job in pending:
                 if self.stop_event.is_set():
@@ -150,16 +148,14 @@ class Processor:
                 log.debug('Sentence %r has %d words: %s',sentence.text,len(sentence.words),
                           'switching footage' if len(sentence.words)>=f['minimum_words_for_new_clip'] else 'keeping current footage')
             log.info('Created %d footage intervals',len(plan.footage))
-            remote_urls = list(dict.fromkeys(interval.source.path for interval in plan.footage
-                                             if interval.source.path.startswith(('http://','https://'))))
-            if remote_urls:
-                self.stage('Downloading selected images')
-                image_directory = Path(self.config['paths']['image_buffer'])/f'row-{job.row}-{token}'
-                selected = download_images(remote_urls,image_directory,downloader,self.stop_event)
-                mapping = dict(zip(remote_urls,selected))
-                plan = replace(plan,footage=tuple(replace(interval,source=mapping.get(interval.source.path,interval.source))
-                                                 for interval in plan.footage))
-                log.info('Downloaded %d distinct selected images to the local buffer',len(selected))
+            remote_urls = list(dict.fromkeys(interval.source.path for interval in plan.footage))
+            self.stage('Downloading selected images')
+            image_directory = Path(self.config['paths']['image_buffer'])/f'row-{job.row}-{token}'
+            selected = download_images(remote_urls,image_directory,downloader,self.stop_event)
+            mapping = dict(zip(remote_urls,selected))
+            plan = replace(plan,footage=tuple(replace(interval,source=mapping[interval.source.path])
+                                             for interval in plan.footage))
+            log.info('Downloaded %d distinct selected images to the local buffer',len(selected))
             self.stage('Generating captions')
             for caption in plan.captions:
                 log.debug('Caption %r persists until %.3fs',caption.sentence.text,caption.end)

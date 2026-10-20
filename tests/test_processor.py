@@ -15,15 +15,14 @@ def setup(monkeypatch,tmp_path):
     c['baserow']['table_id']=uuid.uuid4().int
     c['paths'].update(temp=str(tmp_path/'temp'),output=str(tmp_path/'output'),buffer=str(tmp_path/'buffer'),image_buffer=str(tmp_path/'images'))
     monkeypatch.setattr('app.processor.check_job_config',lambda c:None)
-    monkeypatch.setattr('app.processor.discover',lambda c:[Source('unused','image')])
+    monkeypatch.setattr('app.processor.download_images',lambda urls,*args:[Source('unused','image') for url in urls])
     monkeypatch.setattr('app.processor.audio_duration',lambda p:2)
-    c['footage']['use_local_assets']=True
     updates=[]
     class FakeTable:
         def __init__(self,*a): pass
         def jobs(self):
             return [Job(2,'duplicate','broken','NOT_PROCESSED'),Job(3,'duplicate','valid','NOT_PROCESSED'),Job(4,'done','valid','COMPLETED')]
-        def image_urls(self): return []
+        def image_urls(self): return ['https://example.test/background.png']
         def update(self,job,status,**kwargs): updates.append((job.row,status,kwargs))
     class FakeDownloader:
         def __init__(self,*a): pass

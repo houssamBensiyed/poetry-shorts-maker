@@ -13,10 +13,6 @@ def test_audio_and_selected_image_to_local_render_then_upload(monkeypatch,tmp_pa
     c=load_config()
     c['baserow']['table_id']=91872
     c['paths'].update(buffer=str(tmp_path/'buffer'),output=str(tmp_path/'output'),temp=str(tmp_path/'temp'),image_buffer=str(tmp_path/'buffer-images'))
-    videos,images=tmp_path/'videos',tmp_path/'images'
-    videos.mkdir();images.mkdir()
-    Image.new('RGB',(160,100),'blue').save(images/'background.png')
-    c['footage'].update(videos_directory=str(videos),images_directory=str(images))
     c['video'].update(width=320,height=480,fps=20,preset='ultrafast')
     c['captions'].update(font_size=30,safe_margin=20)
     row={'status':'NOT_PROCESSED','output':'','uploaded_url':''}

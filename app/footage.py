@@ -1,10 +1,6 @@
 import json
-import logging
 from pathlib import Path
 import subprocess
-from app.timeline import Source
-
-log = logging.getLogger('video_builder')
 
 
 def probe(path):
@@ -24,27 +20,3 @@ def audio_duration(path):
     if duration <= 0:
         raise ValueError('Audio is empty or has no measurable duration')
     return duration
-
-
-def discover(config):
-    sources = []
-    for key, kind, suffixes in [('videos_directory','video',{'.mp4','.mov','.mkv','.webm','.avi','.m4v'}),
-                                ('images_directory','image',{'.png','.jpg','.jpeg','.webp','.bmp'})]:
-        directory = Path(config[key])
-        if not directory.is_dir():
-            raise ValueError(f'Footage directory not found: {directory}')
-        for path in sorted(directory.iterdir()):
-            if path.suffix.lower() not in suffixes or not path.is_file():
-                continue
-            try:
-                data = probe(path)
-                stream = next(s for s in data['streams'] if s['codec_type']=='video')
-                duration = float(stream.get('duration') or data['format'].get('duration') or 0)
-                if kind=='video' and duration<=0:
-                    raise ValueError('Video duration is unknown')
-                sources.append(Source(str(path.resolve()),kind,duration))
-            except (ValueError,StopIteration,subprocess.TimeoutExpired) as exc:
-                log.warning('Skipping corrupted footage %s: %s',path.name,exc)
-    if not sources:
-        raise ValueError('No usable footage. Add videos or images to the configured folders.')
-    return sources

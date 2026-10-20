@@ -14,7 +14,7 @@ DEFAULTS = {
                   'folder':'poetry-shorts','chunk_mb':10,'timeout_seconds':120},
     'whisper': {'model':'','api_url':'','api_key_env':'WHISPER_API_KEY','language':None,'word_timestamps':True,'timeout_seconds':120},
     'video': {'width':1080,'height':1920,'fps':30,'codec':'libx264','crf':20,'preset':'medium','threads':2},
-    'footage': {'videos_directory':'footage/videos','images_directory':'footage/images','minimum_words_for_new_clip':3,'avoid_immediate_repetition':True,'random_seed':None,'use_local_assets':False},
+    'footage': {'minimum_words_for_new_clip':3,'avoid_immediate_repetition':True,'random_seed':None},
     'captions': {'font_name':'Special Elite','font_file':'assets/fonts/SpecialElite-Regular.ttf','font_size':70,'color':'#FFFFFF','outline_color':'#000000','outline_width':3,'position':'center','max_words_per_line':5,'safe_margin':80,'animation':'word_by_word','persist_during_silence':True},
     'paths': {'output':'output','temp':'temp','logs':'logs','buffer':'buffer/voiceovers','image_buffer':'buffer/images'},
     'server': {'host':'127.0.0.1','port':8000},
@@ -37,8 +37,7 @@ def load_config(path=None):
         if set(values)-set(config[section]):
             raise ValueError(f'Unknown setting in {section}: {set(values)-set(config[section])}')
         config[section].update(values)
-    for section, keys in [('footage',['videos_directory','images_directory']),
-                          ('captions',['font_file']),('paths',['output','temp','logs','buffer','image_buffer'])]:
+    for section, keys in [('captions',['font_file']),('paths',['output','temp','logs','buffer','image_buffer'])]:
         for key in keys:
             if not isinstance(config[section][key],str) or not config[section][key].strip():
                 raise ValueError(f'{section}.{key} must be a nonempty path')
@@ -70,8 +69,6 @@ def validate_config(c):
     for field in ('table_id','images_table_id'):
         if type(c['baserow'][field]) is not int or c['baserow'][field]<0:
             raise ValueError(f'baserow.{field} must be a numeric table ID (0 means not configured yet)')
-    if type(c['footage']['use_local_assets']) is not bool:
-        raise ValueError('footage.use_local_assets must be true or false')
     for key in ('timeout_seconds','max_file_mb'):
         if type(c['downloads'][key]) is not int or c['downloads'][key]<=0:
             raise ValueError(f'downloads.{key} must be a positive integer')

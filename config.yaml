@@ -29,9 +29,6 @@ video:
   preset: medium
   threads: 2
 footage:
-  use_local_assets: false  # true adds local videos/images to the random selection pool
-  videos_directory: footage/videos
-  images_directory: footage/images
   minimum_words_for_new_clip: 3
   avoid_immediate_repetition: true
   random_seed: null

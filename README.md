@@ -117,7 +117,7 @@ The provider must accept Bearer-authenticated multipart requests with `response_
 
 Only a temporary mono 16 kHz FLAC copy is submitted to the transcription API. The original buffered audio is used for the final video. The upload is limited to 24 MB; the provider may impose a smaller limit or charge for requests/retries. There is no local model fallback.
 
-## 4. Add your audio links and footage
+## 4. Add your audio and image links
 
 Put an accessible **direct HTTP/HTTPS audio URL** in each audio row's `Audio URL` field, and set its status to `NOT_PROCESSED`. The host can be any service that supplies the actual file, including an object-storage URL, your own server, or a signed download link. Normal redirects are followed.
 
@@ -137,12 +137,7 @@ downloads:
   max_file_mb: 256
 ```
 
-By default, footage comes from the online `Images` table. Optionally set `footage.use_local_assets: true` to also include videos from `footage/videos/` and images from `footage/images/` in the random selection pool:
-
-- Videos: MP4, MOV, MKV, WebM, AVI, M4V.
-- Images: PNG, JPG/JPEG, WebP, BMP.
-
-The Baserow image table must contain at least one usable link. If local assets are enabled, the local folders must also contain a valid item. Corrupt local files are skipped with warnings. Special Elite is bundled in `assets/fonts/` with its license. No online font service is used.
+The Baserow image table must contain at least one usable link. All background images come from this table and are downloaded into `buffer/images/`. Special Elite is bundled in `assets/fonts/` with its license. No online font service is used.
 
 ## 5. Start the dashboard
 
@@ -173,9 +168,8 @@ These folders remain on your computer when containers are rebuilt or removed:
 | `output/` | Completed MP4 files |
 | `temp/` | Failed-job diagnostics; successful render work directories are removed |
 | `logs/` | Rotating logs (`video_builder.log`, 5 MB × 4 files) |
-| `footage/` | Your reusable background assets |
 
-Compose mounts `config.yaml` and footage read-only, and buffer/output/temp/logs read-write. Credentials and personal media are excluded from the image build context. Logs include job IDs and file paths; avoid sharing them indiscriminately. Signed input URLs may appear in the authenticated dashboard/API state but are not intentionally written into download error messages.
+Compose mounts `config.yaml` read-only, and buffer/output/temp/logs read-write. Credentials and personal media are excluded from the image build context. Logs include job IDs and file paths; avoid sharing them indiscriminately. Signed input URLs may appear in the authenticated dashboard/API state but are not intentionally written into download error messages.
 
 Useful YAML settings:
 
@@ -188,9 +182,9 @@ Useful YAML settings:
 - `captions.font_size`, `safe_margin`, `max_words_per_line`, colors and outline: caption appearance.
 - `paths.buffer`, `image_buffer`, `output`, `temp`, `logs`: local directories, relative to `config.yaml`.
 
-Captions always use progressive word reveal and persistence during silence. Disabling those settings is rejected. The final MP4 uses H.264 video, AAC voiceover audio, yuv420p, and fast-start metadata. AAC encoding preserves timing and meaningful silence but is not bit-for-bit audio copying. Footage audio is discarded.
+Captions always use progressive word reveal and persistence during silence. Disabling those settings is rejected. The final MP4 uses H.264 video, AAC voiceover audio, yuv420p, and fast-start metadata. AAC encoding preserves timing and meaningful silence but is not bit-for-bit audio copying.
 
-Rebuild after code/dependency changes with `docker compose build dashboard`. Editing YAML or adding footage does not require rebuilding; restart the running entry point to reload settings.
+Rebuild after code/dependency changes with `docker compose build dashboard`. Editing YAML does not require rebuilding; restart the running entry point to reload settings. Image links are read from Baserow at the start of each processing run.
 
 ## 7. Optional HTTP automation
 
@@ -241,7 +235,7 @@ Partial MP4s and incomplete downloads are removed. Failed-job transcripts, plans
 
 Timeline planning is pure Python and independent of the online table or file host. Punctuation groups timestamped words across API segment boundaries. A long punctuated sentence stays intact; text without sentence-ending punctuation is split every 20 words. This is a punctuation heuristic, so abbreviations can cause extra breaks. All words are retained.
 
-Initial footage starts at zero. A qualifying sentence begins a new random footage interval; shorter sentences do not cut, restart or freeze it. Long source videos get random valid offsets, short videos loop, and images fill their intervals. Aspect-preserving scale/center crop normalizes resolution and FPS. Shared frame boundaries prevent gaps; the final duration matches the voiceover within one output frame.
+The first background image starts at zero. A qualifying sentence selects a new random image; shorter sentences keep the current image. Each image fills its interval. Aspect-preserving scale/center crop normalizes resolution and FPS. Shared frame boundaries prevent gaps; the final duration matches the voiceover within one output frame.
 
 Caption layouts are precomputed for the full sentence. Unrevealed words are fully transparent but reserve their layout space, so displayed words do not jump around. This is progressive reveal, not karaoke highlighting. The full sentence stays visible until the next sentence starts; the final caption stays until audio end. ASS timing uses centiseconds and output frame precision. Before the first word, or for silence-only audio, captions can be absent.
 

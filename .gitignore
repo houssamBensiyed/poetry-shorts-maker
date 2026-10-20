@@ -1,12 +1,7 @@
 .venv/
 __pycache__/
 .pytest_cache/
-credentials/*
-!credentials/.gitkeep
-footage/videos/*
-!footage/videos/.gitkeep
-footage/images/*
-!footage/images/.gitkeep
+credentials/
 output/*
 !output/.gitkeep
 temp/*
