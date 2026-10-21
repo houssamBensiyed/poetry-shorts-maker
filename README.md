@@ -1,93 +1,76 @@
-# Poetry Shorts Maker — AI Video Builder
+<div align="center">
 
-Use **[Baserow](https://baserow.io)** as your online spreadsheet, paste direct audio links into it, and generate vertical captioned videos on your own computer. No Google Cloud project, Google account, Drive integration, or OAuth setup is required.
+# Poetry Shorts Maker
 
-The workflow is:
+### Your voice. Your images. A finished short.
 
-**Baserow audio + image tables → download audio and randomly selected images → local buffers → transcription API + FFmpeg → upload MP4 to Cloudinary → save its URL and mark the audio row DONE.**
+Turn audio links and a table of images into vertical videos with timed captions.
 
-Jobs run sequentially only when you press Start Processing or send an authenticated HTTP trigger. There is no scheduler, database server, or web frontend to install.
+![Python 3.13](docs/assets/python.svg)
+![Docker](docs/assets/docker.svg)
+![Baserow](docs/assets/baserow.svg)
+![Cloudinary](docs/assets/cloudinary.svg)
 
-**Core rules:** sentences of at least three words start new footage; one- and two-word sentences keep the current footage playing uninterrupted. Every sentence gets captions. Words appear progressively at their timestamps, and the completed caption stays visible through silence until the next sentence begins.
+**Baserow → Local processing → Cloudinary → DONE**
 
-## 1. Install Docker
+[Quick start](#quick-start) · [Architecture](#architecture) · [Class diagrams](#class-diagrams) · [Project layout](#project-layout) · [Operations](docs/operations.md)
 
-Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) on Windows/macOS, or Docker Engine with the Compose plugin on Linux. Start Docker and open a terminal in this project folder.
+</div>
 
-The container includes **Python 3.13**, FFmpeg/FFprobe with libass/H.264, Special Elite, and the pinned Python dependencies. You do not need Python or FFmpeg installed on your computer. Transcription uses your API provider; no model or GPU is required.
+---
+
+## At a glance
+
+| You provide | The app handles | You receive |
+| --- | --- | --- |
+| Audio links in Baserow | Downloads, API transcription and timed captions | A vertical MP4 with your voiceover |
+| Image links in a separate table | Random selection and local image buffering | Selected images fitted to the video |
+| Service credentials | Cloudinary upload and Baserow updates | A video link and a `DONE` status |
+
+Runs in **Docker with Python 3.13**. FFmpeg, FFprobe, dependencies and the Special Elite font are included. Transcription uses a hosted API, with no Whisper model download or GPU requirement. Google services are not required.
+
+Jobs run one at a time when you start them from the terminal dashboard or optional HTTP API.
+
+## Quick start
+
+### 1. Get the project
+
+Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) or Docker Engine with the Compose plugin, then start Docker.
 
 ```sh
-docker compose build dashboard
+git clone https://github.com/houssamBensiyed/poetry-shorts-maker.git
+cd poetry-shorts-maker
 ```
 
-On Linux, match your account's file ownership before running containers:
+### 2. Create your Baserow tables
 
-```sh
-export LOCAL_UID=$(id -u)
-export LOCAL_GID=$(id -g)
-```
+Create a database at [Baserow](https://baserow.io) with two separate tables. Use the field names below exactly.
 
-Docker Desktop normally works with the defaults. The app runs as a non-root user.
+**Table: `Video Jobs`**
 
-If your corporate/cloud network intercepts HTTPS and the build reports a certificate error, use your administrator-approved CA bundle without disabling verification:
+| Field | Type | What to enter |
+| --- | --- | --- |
+| `ID` | Single line text | Your label, such as `poem-001` |
+| `Audio URL` | URL | A direct link to the audio file |
+| `Status` | Single line text | `NOT_PROCESSED` |
+| `Output File` | Single line text | Leave empty; the app saves the local video path |
+| `Output URL` | URL | Leave empty; the app saves the Cloudinary link |
+| `Error` | Long text | Leave empty; the app records failures here |
 
-```sh
-docker build --secret id=build_ca_bundle,src=/path/to/approved-ca-bundle.pem -t poetry-shorts-maker:local .
-```
+**Table: `Images`**
 
-The bundle is used only during installation and is not copied into the image. A proxy intercepting runtime HTTP clients also requires the trusted CA to be configured for those clients.
+| Field | Type | What to enter |
+| --- | --- | --- |
+| `Image URL` | URL | One direct image link per row |
+| `ID` | Single line text | Optional label |
 
-## 2. Create two Baserow tables
+Create a **database token** with **Read + Update** access to `Video Jobs` and **Read** access to `Images`. Record both numeric table IDs from Baserow's table URLs or API documentation.
 
-1. Create an account at **https://baserow.io**.
-2. Create a database and an audio-job table named `Video Jobs`.
-3. Add these fields with the exact names below. Use ordinary editable fields, not formulas.
+Use editable fields, not formulas. `Status` can also be a single select with `NOT_PROCESSED`, `PROCESSING`, `DONE` and `FAILED`. Images are reusable and need no status field.
 
-| Field | Recommended Baserow type | Example |
-|---|---|---|
-| ID | Single line text | 009 |
-| Audio URL | URL | https://your-file-host.example/voiceover.wav |
-| Status | Single line text | NOT_PROCESSED |
-| Output File | Single line text | Leave empty; the app records the local MP4 path |
-| Output URL | URL | Leave empty; the app records the uploaded Cloudinary link |
-| Error | Long text | Leave empty |
+### 3. Add your credentials
 
-`Status` may alternatively be a Single select field with all four options: `NOT_PROCESSED`, `PROCESSING`, `DONE`, `FAILED`. Existing legacy `COMPLETED` rows are still treated as finished and skipped. Single line text is simpler to configure. Use these exact uppercase values. Blank/unrecognized statuses are skipped with a warning.
-
-The `ID` field is just your display label; duplicates are allowed. Updates use Baserow's internal row ID, so changing the row order will not send an update to the wrong record. Avoid editing/deleting pending rows during a run, because the app takes a snapshot when it starts.
-
-4. Create a **separate table** named `Images`, with an optional `ID` text field and a required **`Image URL`** URL field. Put one direct image link in each row. No status column is needed for images: they are reusable.
-5. In Baserow settings, open **Database tokens**, create a token, and grant **Read + Update** on `Video Jobs` and **Read** on `Images`. Create/delete permissions are not needed.
-6. Find the numeric **table IDs** in each table URL or Baserow's generated API documentation. Use table IDs, not database or view IDs.
-7. Set both IDs in `config.yaml`:
-
-```yaml
-baserow:
-  api_url: https://api.baserow.io
-  table_id: 123456        # Video Jobs
-  images_table_id: 654321 # Images
-  api_key_env: BASEROW_API_TOKEN
-```
-
-`api_url` is the Baserow server root, not the browser table link. Self-hosted Baserow can use its HTTPS server URL. No Google project or service-account JSON file is involved.
-
-## 3. Set up Cloudinary and your transcription provider
-
-Create an account at **[Cloudinary](https://cloudinary.com)**. In its dashboard/API Keys settings, find your **cloud name**, **API key**, and **API secret**. Set the cloud name in YAML:
-
-```yaml
-cloudinary:
-  cloud_name: "YOUR_CLOUD_NAME"
-  api_key_env: CLOUDINARY_API_KEY
-  api_secret_env: CLOUDINARY_API_SECRET
-  folder: poetry-shorts
-  chunk_mb: 10
-  timeout_seconds: 120
-```
-
-No buckets, IAM policies, Google credentials, or upload preset are needed. The app uses signed video uploads. The API secret stays in the application process and is used to sign requests; it is never sent in an upload request. Uploaded videos use **public HTTPS delivery URLs**. Cloudinary account storage/bandwidth/file-size limits still apply; check your plan for your intended video sizes.
-
-Copy `.env.example` to `.env` in the project folder. Open `.env` in a text editor and enter your values:
+Copy [`.env.example`](.env.example) to `.env` and fill in the values locally:
 
 ```dotenv
 BASEROW_API_TOKEN=your_baserow_database_token
@@ -97,158 +80,337 @@ WHISPER_API_KEY=your_transcription_provider_key
 VIDEO_BUILDER_API_KEY=your_private_http_trigger_key
 ```
 
-The HTTP trigger key is needed only if you run the optional API. `.env` is ignored by Git and excluded from the Docker image. Never share or commit it. Compose passes the keys to the containers. Native Python users should export these variables in their shell; the app itself does not read `.env` files.
+Find the Cloudinary credentials in your [Cloudinary dashboard](https://cloudinary.com). The HTTP trigger key is needed only for the optional API. `.env` is excluded from Git and the Docker image.
 
-In `config.yaml`, set your transcription provider's exact HTTPS endpoint and model:
+### 4. Set your table IDs and provider settings
+
+Edit these existing values in [`config.yaml`](config.yaml). Keep the other settings at their defaults to start.
 
 ```yaml
+baserow:
+  api_url: https://api.baserow.io
+  table_id: 123456          # Video Jobs table
+  images_table_id: 654321   # Images table
+
+cloudinary:
+  cloud_name: "YOUR_CLOUD_NAME"
+
 whisper:
-  model: "YOUR_PROVIDER_MODEL"
   api_url: "https://YOUR_PROVIDER_HOST/v1/audio/transcriptions"
-  api_key_env: WHISPER_API_KEY
-  language: null
-  word_timestamps: true
-  timeout_seconds: 120
+  model: "YOUR_PROVIDER_MODEL"
 ```
 
-You selected **Naga (naga.ac)**. Its exact endpoint/model and timestamp support have not yet been verified, so those values are deliberately blank in the supplied configuration.
+> [!IMPORTANT]
+> Naga is the selected transcription provider, but its endpoint, model and timestamp support still need verification. The supplied values are intentionally blank. The provider must return word and segment timestamps. See the [transcription requirements](docs/operations.md#transcription-provider).
 
-The provider must accept Bearer-authenticated multipart requests with `response_format=verbose_json` and `timestamp_granularities[]=word` plus `timestamp_granularities[]=segment`. It must return `text`, `words` (word/start/end), and `segments` (text/start/end). Not every OpenAI-compatible audio model supports these fields. Missing timestamps cause a clear failure; the app never invents them.
+Cloudinary needs a cloud name, API key and API secret. The app uses signed uploads and saves **public HTTPS video URLs**. No upload preset is needed.
 
-Only a temporary mono 16 kHz FLAC copy is submitted to the transcription API. The original buffered audio is used for the final video. The upload is limited to 24 MB; the provider may impose a smaller limit or charge for requests/retries. There is no local model fallback.
+### 5. Build and start
 
-## 4. Add your audio and image links
-
-Put an accessible **direct HTTP/HTTPS audio URL** in each audio row's `Audio URL` field, and set its status to `NOT_PROCESSED`. The host can be any service that supplies the actual file, including an object-storage URL, your own server, or a signed download link. Normal redirects are followed.
-
-A browser preview/share page is not necessarily a download link. Links that return HTML/login pages, require browser cookies, or require a private provider SDK will not work. Use the provider's direct-download or signed URL instead. The application does not bypass a host's access controls. The file must contain audio that FFprobe can read; the URL does not need a file extension.
-
-Downloads are streamed to disk and finalized only after completion. The original audio bytes are kept in **`buffer/voiceovers/`**, even after successful processing.
-
-The app reads the separate `Images` table and logs the total row count and number of distinct usable links. After transcription determines the footage intervals, it randomly selects from the full image pool, avoiding immediate repetition when possible. **Only selected images are downloaded** into `buffer/images/row-…/`; an image reused within the same video is downloaded once. Duplicate links in the image table count once. All downloads finish and image decoding is verified before rendering begins. Broken selected images fail that job visibly; they are not silently substituted.
-
-Images must be still JPEG, PNG, WebP or BMP files; animated images are rejected. Originals stay buffered after success/failure. Each new job downloads its selected images afresh, so a changed URL is not silently served from a stale cross-job cache. You can clear old buffer files when no run needs them. Only the finished MP4 is uploaded to Cloudinary; the buffered source images/audio are not uploaded there.
-
-Optional download settings:
-
-```yaml
-downloads:
-  timeout_seconds: 60
-  max_file_mb: 256
-```
-
-The Baserow image table must contain at least one usable link. All background images come from this table and are downloaded into `buffer/images/`. Special Elite is bundled in `assets/fonts/` with its license. No online font service is used.
-
-## 5. Start the dashboard
+On Linux, set file ownership for the containers first:
 
 ```sh
+export LOCAL_UID=$(id -u)
+export LOCAL_GID=$(id -g)
+```
+
+Then build and open the dashboard in an interactive terminal:
+
+```sh
+docker compose build dashboard
 docker compose run --rm dashboard
 ```
 
-Use an interactive terminal, not detached mode. Buttons support mouse clicks and Tab/Enter:
+Add at least one image link and an audio row with status `NOT_PROCESSED`, then click **Start Processing**. The app saves the completed MP4 locally, uploads it and updates the audio row with its link.
 
-- **Refresh Jobs:** read Baserow job counts without downloading or rendering.
-- **Start Processing:** process all pending rows sequentially.
-- **Stop Processing:** prevent new jobs and cancel the current job safely. FFmpeg stops promptly; HTTP operations stop at the next chunk/request boundary or timeout. The UI remains responsive.
-- **View Logs:** focus live logs and display the full log-file location.
-- **Exit** or **q/Ctrl+C:** confirm stopping an active run before exiting.
+## Architecture
 
-The dashboard opens before credentials are configured, and reports missing settings when you start/refresh. Rendering progress comes from FFmpeg timestamps; other stages use an indeterminate indicator.
+**Baserow holds the lists. Docker creates the video. Cloudinary stores the upload.**
 
-The app marks an audio row `PROCESSING`, downloads/checks its audio, transcribes, plans its random image choices, downloads the selected images, renders and uploads the MP4. **Only after a complete upload is confirmed** does it update that same row to **`DONE`**, set **`Output URL`** to the uploaded HTTPS link, and keep **`Output File`** as a local path such as `output/row-42-….mp4`. The URL is clickable from Baserow; the local copy remains on the computer running Docker. Uploads use 10 MB chunks with bounded retries and progress messages in the live logs. Failures are marked `FAILED` where possible, with a readable `Error`; the next pending row still runs.
+```mermaid
+flowchart TD
+    Tables["Baserow<br/>Audio jobs + image links"] -->|Read lists| Worker
+    subgraph Local["Docker · Python 3.13"]
+        Controls["Terminal dashboard<br/>or HTTP API"] -->|Start / monitor| Worker
+        Worker["Processor<br/>One job at a time"]
+        Buffer["Local buffers<br/>Downloaded audio + selected images"]
+        Render["FFmpeg<br/>Images + voiceover + timed captions"]
+        Video["output/<br/>Finished MP4"]
+        Worker -->|Download from file URLs| Buffer
+        Buffer --> Render
+        Render --> Video
+    end
 
-## 6. Files and configuration
+    Worker -->|Send audio| ASR["Transcription API"]
+    ASR -->|Word timestamps| Worker
+    Worker -->|Image plan + captions| Render
+    Video -->|Upload| Cloud["Cloudinary"]
+    Cloud -->|Confirmed video URL| Worker
+    Worker -->|Save URL + mark DONE| Tables
 
-These folders remain on your computer when containers are rebuilt or removed:
-
-| Folder | Contents |
-|---|---|
-| `buffer/voiceovers/` | Original downloaded audio, retained after success/failure |
-| `buffer/images/` | Selected images downloaded for each video, retained after success/failure |
-| `output/` | Completed MP4 files |
-| `temp/` | Failed-job diagnostics; successful render work directories are removed |
-| `logs/` | Rotating logs (`video_builder.log`, 5 MB × 4 files) |
-
-Compose mounts `config.yaml` read-only, and buffer/output/temp/logs read-write. Credentials and personal media are excluded from the image build context. Logs include job IDs and file paths; avoid sharing them indiscriminately. Signed input URLs may appear in the authenticated dashboard/API state but are not intentionally written into download error messages.
-
-Useful YAML settings:
-
-- `video.width`/`height`/`fps`: default 1080×1920, 30 FPS; dimensions must be even.
-- `video.crf`: default 20; smaller means higher quality/larger output.
-- `video.preset`/`threads`: render speed and CPU use.
-- `footage.minimum_words_for_new_clip`: default **3**, preserving short-sentence continuity.
-- `footage.random_seed`: integer for reproducible plans, or `null` for randomness.
-- `captions.position`: `top`, `center`, or `bottom`.
-- `captions.font_size`, `safe_margin`, `max_words_per_line`, colors and outline: caption appearance.
-- `paths.buffer`, `image_buffer`, `output`, `temp`, `logs`: local directories, relative to `config.yaml`.
-
-Captions always use progressive word reveal and persistence during silence. Disabling those settings is rejected. The final MP4 uses H.264 video, AAC voiceover audio, yuv420p, and fast-start metadata. AAC encoding preserves timing and meaningful silence but is not bit-for-bit audio copying.
-
-Rebuild after code/dependency changes with `docker compose build dashboard`. Editing YAML does not require rebuilding; restart the running entry point to reload settings. Image links are read from Baserow at the start of each processing run.
-
-## 7. Optional HTTP automation
-
-Set `VIDEO_BUILDER_API_KEY` in `.env`, then:
-
-```sh
-docker compose --profile api up -d api
+    classDef service fill:#eff6ff,stroke:#2563eb,color:#172554
+    classDef storage fill:#ecfdf5,stroke:#059669,color:#064e3b
+    classDef engine fill:#f5f3ff,stroke:#7c3aed,color:#2e1065
+    class Tables,ASR,Cloud service
+    class Buffer,Video storage
+    class Worker,Render engine
+    style Local fill:#f8fafc,stroke:#94a3b8,color:#0f172a
 ```
 
-Both endpoints require an `X-API-Key` header:
+The diagram groups the media stages for readability. For each job, the actual order is:
 
-- `GET /run`: return HTTP 202 immediately and start pending jobs; return `already_running` if a run is active.
-- `GET /status`: report real status, current job and progress.
+1. Read the audio job and count the available image links.
+2. Download the audio and request its transcription.
+3. Plan image changes, randomly select images and download only those selections.
+4. Render the full video using the local audio, local images and timed captions.
+5. Upload the MP4, then save `Output URL`, `Output File` and `DONE` in Baserow.
 
-Set the same key in your client's environment, then use:
+### Design choices
 
-```sh
-curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" http://127.0.0.1:8000/status
-curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" http://127.0.0.1:8000/run
+| Concern | Implementation |
+| --- | --- |
+| Entry points | `main.py` opens the Textual dashboard; `api.py` exposes FastAPI endpoints |
+| Processing | Both entry points use `Processor`; work runs in a background thread |
+| Job tracking | Baserow rows are updated by their stable internal row ID |
+| File access | Generic HTTP(S) downloads from the links stored in Baserow |
+| Rendering | Pure timeline planning, ASS captions and local FFmpeg processing |
+| Upload completion | `DONE` is written only after Cloudinary confirms the complete upload |
+| Concurrency | A shared Docker volume holds the process lock and published status |
+| Recovery | Completed videos and failure checkpoints remain available locally |
+
+The shared lock coordinates containers within the same Compose project. It does not coordinate separate computers. See [running safely](docs/operations.md#running-safely).
+
+## Class diagrams
+
+These diagrams cover all **19 classes defined in `app/`**, split into services and data models. Only selected public methods are shown. Classes marked `external` belong to Python or Textual.
+
+<details>
+<summary><strong>Application services: dashboard, processing and integrations</strong></summary>
+
+Solid arrows indicate references, dotted arrows indicate use, diamonds indicate owned objects, and triangles indicate inheritance.
+
+**Dashboard and shared runtime**
+
+```mermaid
+classDiagram
+    direction TB
+
+    class App {
+        <<external>>
+    }
+    class ModalScreen {
+        <<external>>
+    }
+    class Handler {
+        <<external>>
+    }
+    class Dashboard {
+        +refresh_display()
+        +refresh_jobs()
+        +action_request_exit()
+    }
+    class ConfirmExit {
+        +compose()
+        +on_button_pressed(event)
+    }
+    class LiveLog {
+        +emit(record)
+        +since(sequence)
+    }
+    class Processor {
+        +refresh()
+        +status()
+    }
+    class State {
+        +update(values)
+        +snapshot()
+    }
+    class RunLock {
+        +acquire()
+        +release()
+        +publish(data)
+        +external_state()
+    }
+    App <|-- Dashboard
+    ModalScreen <|-- ConfirmExit
+    Handler <|-- LiveLog
+    Dashboard --> Processor : controls
+    Dashboard --> LiveLog : displays
+    Dashboard ..> ConfirmExit : opens
+    Processor *-- State
+    Processor *-- RunLock
 ```
 
-A `.env` file read by Compose is not automatically exported into your terminal for curl. Never put the key in a URL.
+**Processing and integrations**
 
-The service listens on all interfaces inside the container, but Docker publishes it only on your computer's localhost. To change the host port, set `VIDEO_BUILDER_HTTP_PORT`. Remote access requires your own HTTPS reverse proxy forwarding the header; disable caching/prefetching for `/run`.
+`Processor` is repeated here to show its integration dependencies separately from the dashboard.
 
-Inspect logs with `docker compose logs -f api`; stop with `docker compose stop api`. The default stop grace period is 180 seconds. Increase it if you increase HTTP request timeouts. Cancellation stops uploads between chunks/retries; a final confirmed upload is still committed to Baserow if Stop arrives with its response.
+```mermaid
+classDiagram
+    direction LR
 
-TUI and API share the same processing engine and a Docker lock volume keyed by Baserow server/table ID. Run them from the **same Compose project**. Do not run a different project, native process, or another computer against the same table simultaneously; this is not a distributed lock. Stop the instance that owns a run to cancel it. An observing dashboard cannot stop the other instance. Do not remove lock volumes during a run.
+    class Processor {
+        +start()
+        +stop()
+        +close()
+    }
+    class JobTable {
+        +jobs()
+        +image_urls()
+        +update(job, status)
+    }
+    class Downloader {
+        +download(url, destination)
+    }
+    class Transcriber {
+        +transcribe(path, duration, stop, workdir)
+    }
+    class Uploader {
+        +public_id(path)
+        +upload(path, progress)
+    }
+    class Cancelled {
+        <<exception>>
+    }
+    class Exception {
+        <<external>>
+    }
 
-## 8. Recovery
+    Exception <|-- Cancelled
+    Processor *-- Transcriber
+    Processor ..> JobTable : reads and updates
+    Processor ..> Downloader : downloads
+    Processor ..> Uploader : uploads
+    Processor ..> Cancelled : handles
+```
 
-Failed rows are not retried automatically. To retry, fix the problem and set `Status` to `NOT_PROCESSED`, then start again. A retry downloads a fresh copy into the local buffer.
+</details>
 
-After a crash, a row may remain `PROCESSING`. The next run warns about it and skips it. Ensure no process is still running, then inspect the row and local output before resetting it.
+<details>
+<summary><strong>Data models: jobs, words, images and the video timeline</strong></summary>
 
-A video can render successfully while upload or Baserow update fails. The complete local MP4 is retained:
+These are frozen dataclasses. `JobTable` produces `Job` records, `Transcriber` returns a `Transcript`, and `build_plan()` returns a `Plan` for rendering. A hollow diamond groups shared objects; a filled diamond indicates composition.
 
-- `temp/row-…/rendered.json` records the local output and audio path.
-- `upload.json` records the intended Cloudinary **public ID** before upload begins.
-- `uploaded.json` records a confirmed upload URL/public ID.
-- `failure.json` records the error, local output, and known uploaded URL.
+```mermaid
+classDiagram
+    direction LR
 
-If `uploaded.json` exists, copy its URL into `Output URL`, its path into `Output File`, and set `Status` to `DONE` manually. If the network failed exactly when Cloudinary finished uploading, check Cloudinary for the public ID in `upload.json` before retrying: a remote video may exist even if no final response was received. Never assume a timeout means the upload failed. Uploads and Baserow updates cannot be one atomic transaction. Resetting a failed job starts a new render/upload with a new public ID; inspect recovery metadata first to avoid duplicates.
+    class Job {
+        +int row
+        +str id
+        +str voice_link
+        +str status
+    }
+    class Transcript {
+        +tuple words
+        +tuple segments
+    }
+    class Word {
+        +str text
+        +float start
+        +float end
+    }
+    class Sentence {
+        +tuple words
+        +start
+        +text
+    }
+    class Source {
+        +str path
+        +str kind
+        +float duration
+    }
+    class Interval {
+        +float start
+        +float end
+        +Source source
+        +float offset
+    }
+    class Caption {
+        +Sentence sentence
+        +float end
+        +reveals()
+    }
+    class Plan {
+        +float duration
+        +tuple footage
+        +tuple captions
+        +to_dict()
+    }
 
-Partial MP4s and incomplete downloads are removed. Failed-job transcripts, plans, subtitles and FFmpeg logs remain in `temp/`; the original audio and selected images remain in their buffers.
+    Transcript "1" o-- "0..*" Word : words
+    Sentence "1" o-- "1..*" Word : words
+    Plan "1" *-- "1..*" Interval : footage
+    Plan "1" *-- "0..*" Caption : captions
+    Interval --> Source : selected image
+    Caption --> Sentence : text and timing
+```
 
-## Timeline behavior
+`Source` and the rendering helpers also support video sources internally. The application workflow supplies only images from Baserow; there is no local footage input folder.
 
-Timeline planning is pure Python and independent of the online table or file host. Punctuation groups timestamped words across API segment boundaries. A long punctuated sentence stays intact; text without sentence-ending punctuation is split every 20 words. This is a punctuation heuristic, so abbreviations can cause extra breaks. All words are retained.
+</details>
 
-The first background image starts at zero. A qualifying sentence selects a new random image; shorter sentences keep the current image. Each image fills its interval. Aspect-preserving scale/center crop normalizes resolution and FPS. Shared frame boundaries prevent gaps; the final duration matches the voiceover within one output frame.
+### Modules without application classes
 
-Caption layouts are precomputed for the full sentence. Unrevealed words are fully transparent but reserve their layout space, so displayed words do not jump around. This is progressive reveal, not karaoke highlighting. The full sentence stays visible until the next sentence starts; the final caption stays until audio end. ASS timing uses centiseconds and output frame precision. Before the first word, or for silence-only audio, captions can be absent.
+| Module | Responsibility |
+| --- | --- |
+| [`config.py`](app/config.py) | Load YAML, resolve paths and validate required settings |
+| [`images.py`](app/images.py) | Download selected images, verify decoding and return local sources |
+| [`footage.py`](app/footage.py) | Inspect media with FFprobe and measure audio duration |
+| [`captions.py`](app/captions.py) | Lay out words and write timed ASS subtitles |
 
-## Tests and validation
+[`timeline.py`](app/timeline.py) also groups words into sentences and builds the plan. [`video_builder.py`](app/video_builder.py) defines `Cancelled` plus the FFmpeg rendering functions.
 
-The Python 3.13 Docker image builds successfully and **67 tests passed inside it**.
+## Project layout
+
+```text
+poetry-shorts-maker/
+├── app/                    Application classes and processing functions
+├── assets/fonts/           Bundled Special Elite font and license
+├── buffer/
+│   ├── voiceovers/         Downloaded original audio
+│   └── images/             Selected images downloaded for each job
+├── docs/                   Operations guide and README badge assets
+├── logs/                   Rotating application logs
+├── output/                 Completed MP4 files
+├── temp/                   Job work files and recovery checkpoints
+├── tests/                  Unit and integration tests
+├── main.py                 Terminal dashboard entry point
+├── api.py                  Optional HTTP API entry point
+├── config.yaml             Service and video settings
+├── .env.example            Credential template
+├── Dockerfile              Python 3.13 and FFmpeg runtime
+├── compose.yaml            Dashboard, API and persistent storage
+├── requirements.txt        Dependency constraints
+└── requirements.lock       Pinned Python dependencies
+```
+
+The buffers, output, logs and temporary files live on your computer through Docker mounts. Successful jobs clear their temporary work files; downloaded media and completed videos remain. The `footage` YAML section controls image timing and random selection, not a folder.
+
+## Output and controls
+
+| Setting | Default behavior |
+| --- | --- |
+| Video | 1080 × 1920, 30 FPS, H.264 with AAC audio |
+| Image changes | A sentence with at least 3 words starts a new selection |
+| Short sentences | Keep the current image |
+| Captions | Reveal words at their timestamps; hold through silence |
+| Font | Special Elite, bundled locally |
+| Upload | Signed Cloudinary upload in 10 MB chunks |
+| Completion | Save the uploaded URL and mark the audio row `DONE` |
+
+Use **Refresh Jobs** to read counts, **Start Processing** to run pending rows, and **Stop Processing** to stop safely. Mouse clicks and Tab/Enter are supported. The dashboard can open before credentials are configured.
+
+For API commands, tuning, supported file links and recovery, see the **[operations guide](docs/operations.md)**.
+
+## Validation
+
+The Python 3.13 Docker build and **67 application tests** passed during the latest code validation. Run the suite with:
 
 ```sh
 docker compose run --rm --no-deps dashboard python -m pytest -q
 ```
 
-Tests cover timeline rules, real FFmpeg renders with decoded-frame caption checks, downloads through a real local HTTP server, redirects and rejected HTML/oversized/empty files, Baserow pagination/row updates with mocked responses, cancellation, recovery, TUI and authenticated API behavior. An integration test downloads real audio and a randomly selected image through a local HTTP server, retains their buffers, renders a real MP4, submits it to a simulated uploader, and verifies DONE rows are not processed twice. Online Baserow, paid transcription, and Cloudinary use controlled mocks. Upload tests check multipart signatures, chunk ranges/retries, byte preservation, cancellation, missing completion responses, and failure recovery without marking rows DONE.
+Coverage includes real local HTTP downloads, FFmpeg renders and caption-frame checks, random image selection, API authentication, cancellation, upload signatures and failure recovery. External Baserow, transcription and Cloudinary responses are mocked in tests.
 
-Live Baserow access still requires both table IDs and your database token. Live Cloudinary uploads require the cloud name, API key and API secret; no real upload has been attempted without them. This environment's proxy currently blocks `api.baserow.io`; its network setting must be applied before live testing. Naga transcription is also unverified until its endpoint/model/key and timestamp support are configured. No claim is made that these external integrations have run successfully.
-
-Native development remains possible with Python 3.13, FFmpeg and a virtual environment: install `requirements.lock`, export the required environment variables, then run `python main.py` or `python api.py`. No Google SDK is required.
+Live service processing still requires your table IDs, credentials and a verified transcription endpoint and model. The test results do not claim a successful live upload or paid transcription request.
