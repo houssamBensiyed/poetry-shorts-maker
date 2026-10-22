@@ -28,6 +28,50 @@ def test_restores_sentence_punctuation_without_changing_timestamps():
     assert len(sentences_from_words(result.words, 3)) == 2
 
 
+@pytest.mark.parametrize("overrun", [0.2, 0.28, 0.5])
+def test_small_end_overruns_are_clipped_without_changing_other_timestamps(overrun):
+    data = payload()
+    data["words"][-1]["end"] = 3 + overrun
+    data["segments"][-1]["end"] = 3 + overrun
+
+    result = normalize_response(data, 3)
+
+    assert [w.start for w in result.words] == [0, 0.5, 2]
+    assert [w.end for w in result.words] == [0.5, 1, 3]
+    assert result.segments[-1]["end"] == 3
+    assert sentences_from_words(result.words, 3)[-1].words[-1].end == 3
+    assert data["words"][-1]["end"] == 3 + overrun
+    assert data["segments"][-1]["end"] == 3 + overrun
+
+
+@pytest.mark.parametrize("collection", ["words", "segments"])
+@pytest.mark.parametrize(
+    "start,end",
+    [
+        (2, 3.5001),  # Too large to be a small estimate error.
+        (3, 3.2),  # Speech must start inside the recording to be clipped.
+        (3.1, 3.2),
+        (-0.01, 3.2),
+        (2.5, 2.4),
+        (2, float("nan")),
+        (2, float("inf")),
+    ],
+)
+def test_end_clipping_does_not_hide_invalid_timestamps(collection, start, end):
+    data = payload()
+    data[collection][-1].update(start=start, end=end)
+    with pytest.raises(ValueError):
+        normalize_response(data, 3)
+
+
+def test_end_clipping_does_not_hide_unordered_words():
+    data = payload()
+    data["words"][1]["end"] = 3.3
+    data["words"][2]["end"] = 3.2
+    with pytest.raises(ValueError, match="ordered"):
+        normalize_response(data, 3)
+
+
 @pytest.mark.parametrize(
     "change",
     [

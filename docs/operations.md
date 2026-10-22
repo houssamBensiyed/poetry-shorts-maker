@@ -28,7 +28,7 @@ Downloads are finalized only after completion. Incomplete downloads and partial 
 
 Set `whisper.api_url` to the full HTTPS transcription endpoint and `whisper.model` to the provider's model name. The `whisper` configuration name refers to the API interface. No model weights are installed or downloaded.
 
-Naga at [naga.ac](https://naga.ac) is the selected provider. Its exact endpoint, model and support for the required timestamps remain unverified.
+Groq is the selected provider: `https://api.groq.com/openai/v1/audio/transcriptions` with `whisper-large-v3`. Both this model and `whisper-large-v3-turbo` returned word and segment timestamps in live checks. Supply your Groq key through `WHISPER_API_KEY`. See [Groq's speech-to-text documentation](https://console.groq.com/docs/speech-to-text).
 
 The provider must accept Bearer-authenticated multipart requests with:
 
@@ -41,6 +41,8 @@ The provider must accept Bearer-authenticated multipart requests with:
 | `language` | Optional configured language code |
 
 For speech, the response must include `text`, `words` with word/start/end fields, and `segments` with text/start/end fields. The app validates timestamp order and alignment, and restores punctuation from the transcript text. Missing or inconsistent timestamps fail the job rather than being fabricated.
+
+Whisper may estimate a word or segment end slightly beyond the recording. Ends up to 0.5 seconds beyond the actual audio duration are capped at that duration, provided speech starts inside the recording. Larger overruns, invalid timestamps and unordered words still fail validation. Word order is checked before clipping.
 
 The temporary FLAC upload is limited to 24 MB and removed on completion, failure or cancellation, including cancellation during audio preparation. The original buffered audio supplies the final video's audio track. Your provider may impose a smaller limit and may charge for retries.
 

@@ -19,9 +19,12 @@ from app.timeline import Word, validate_words
 
 log = logging.getLogger("video_builder")
 
+# Whisper can place a final word slightly past the end of the recording.
+MAX_END_OVERRUN_SECONDS = 0.5
+
 
 def normalize_response(data, duration):
-    """Restore transcript punctuation while preserving provider word timestamps.
+    """Restore punctuation and bound small overruns to the original audio.
 
     Args:
         data: Decoded API object containing text, words and segments arrays.
@@ -31,7 +34,10 @@ def normalize_response(data, duration):
     tokens before slicing punctuation back into words. Alignment crosses segment
     boundaries so provider segmentation cannot dictate sentence cuts. Validate
     word ordering and segment bounds, then return an immutable Transcript wrapper.
-    Segment dictionaries remain available for recovery diagnostics.
+    Clip word and segment ends up to 0.5 seconds past the audio boundary, only
+    when they start inside the recording. Check word ordering before clipping
+    so normalization cannot hide reversed provider timestamps. Segment
+    dictionaries remain available for recovery diagnostics.
 
     Raise ValueError for mismatched text, missing speech timestamps, invalid
     shapes or out-of-range timing. Empty speech is valid; recognized words require
@@ -78,6 +84,8 @@ def normalize_response(data, duration):
             )
         )
         start_char = end_char
+    validate_words(words, duration + MAX_END_OVERRUN_SECONDS)
+    words = [Word(w.text, w.start, bounded_end(w.start, w.end, duration)) for w in words]
     validate_words(words, duration)
     segments = []
     raw_segments = data.get("segments", [])
@@ -89,12 +97,20 @@ def normalize_response(data, duration):
         if not isinstance(segment, dict) or not isinstance(segment.get("text"), str):
             raise ValueError("Transcription API returned an invalid segment")
         start, end = timestamp(segment.get("start")), timestamp(segment.get("end"))
-        if not 0 <= start <= end <= duration:
-            raise ValueError("API segment timestamps are outside the audio duration")
+        end = bounded_end(start, end, duration)
         segments.append({"text": segment["text"], "start": start, "end": end})
     if words and not segments:
         raise ValueError("Transcription API did not return requested segment timestamps")
     return Transcript(tuple(words), tuple(segments))
+
+
+def bounded_end(start, end, duration):
+    """Cap a small end overrun without accepting speech outside the recording."""
+    if 0 <= start <= end <= duration:
+        return end
+    if 0 <= start < duration < end <= duration + MAX_END_OVERRUN_SECONDS:
+        return duration
+    raise ValueError("API timestamps are outside the audio duration or reversed")
 
 
 def timestamp(value):
