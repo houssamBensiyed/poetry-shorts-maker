@@ -127,6 +127,12 @@ docker compose run --rm dashboard
 
 Add at least one image link and an audio row with status `NOT_PROCESSED`, then click **Start Processing**. The app saves the completed MP4 locally, uploads it and updates the audio row with its link.
 
+## Visual testing with n8n
+
+Import [n8n/poetry-shorts-visual-demo.json](n8n/poetry-shorts-visual-demo.json) into n8n and click **Execute workflow** to inspect the entire pipeline with sample data, sequential jobs, captions, recovery checkpoints and success/failure branches. This offline demo simulates media and provider operations without creating files or making paid requests.
+
+A second workflow, [n8n/poetry-shorts-api-runner.json](n8n/poetry-shorts-api-runner.json), starts and monitors real processing through the Python API. See the [n8n guide](n8n/README.md) for imports, credentials, example results and an optional local Docker setup.
+
 ## Architecture
 
 **Baserow holds the lists. Docker creates the video. Cloudinary stores the upload.**
@@ -484,6 +490,7 @@ poetry-shorts-maker/
 │   ├── CODE_REVIEW.md       Findings, fixes and remaining limitations
 │   ├── operations.md       Configuration, HTTP API and recovery
 │   └── assets/             README badges
+├── n8n/                    Importable visual demo, live API runner and optional editor setup
 ├── logs/                   Rotating application logs
 ├── output/                 Completed MP4 files
 ├── temp/                   Job work files and recovery checkpoints

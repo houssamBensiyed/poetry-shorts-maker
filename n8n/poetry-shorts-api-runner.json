@@ -1,0 +1,410 @@
+{
+  "name": "Poetry Shorts Maker - Live API Runner",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "809962b8-2f9a-5463-91e8-e558482a6aa5",
+      "name": "Run Real Processing",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const config = {apiBaseUrl: 'http://api:8000', pollIntervalSeconds: 5, maxPolls: 120};\nconfig.apiBaseUrl = config.apiBaseUrl.replace(/\\/+$/, '');\nif (!/^https?:\\/\\/[^\\s/?#]+(?::\\d+)?(?:\\/[^?#]*)?$/.test(config.apiBaseUrl) || config.apiBaseUrl.includes('@')) {\n  throw new Error('Set a valid http(s) API base URL without credentials, query or fragment');\n}\nif (!Number.isInteger(config.maxPolls) || config.maxPolls < 1 ||\n    !Number.isFinite(config.pollIntervalSeconds) || config.pollIntervalSeconds < 1) {\n  throw new Error('maxPolls must be positive; pollIntervalSeconds must be at least 1');\n}\nreturn [{json: config}];"
+      },
+      "id": "36e73456-bc75-5648-a0f8-0049590f7df0",
+      "name": "Connection Settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Connection Settings').first().json.apiBaseUrl + '/run' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      },
+      "id": "22983359-7e2b-583f-b546-3b865f59065d",
+      "name": "Start Processing - GET run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        320
+      ],
+      "retryOnFail": false,
+      "notes": "Select an n8n Header Auth credential: X-API-Key = VIDEO_BUILDER_API_KEY.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const response = $input.first().json;\nif (!['accepted', 'already_running'].includes(response.status)) {\n  throw new Error('Unexpected /run response; inspect the HTTP node output');\n}\nreturn [{json: {trigger: response.status,\n  note: response.status === 'already_running' ? 'Observing the existing run; no second batch was started.' : 'Run accepted.'}}];"
+      },
+      "id": "7ae1ec3d-1a34-548d-bd5d-2cc15be7ad58",
+      "name": "Validate Start Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $('Connection Settings').first().json.pollIntervalSeconds }}",
+        "unit": "seconds"
+      },
+      "id": "34002624-1436-50dc-8c54-8a527feb365b",
+      "name": "Wait Between Polls",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        960,
+        320
+      ],
+      "webhookId": "9491e524-d710-5a43-abe3-cd28ef911ecb"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Connection Settings').first().json.apiBaseUrl + '/status' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      },
+      "id": "c3196cf3-1a9a-5839-8ac5-47551d35cfa0",
+      "name": "Read Processing Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "notes": "Select an n8n Header Auth credential: X-API-Key = VIDEO_BUILDER_API_KEY.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const config = $('Connection Settings').first().json;\nconst status = $input.first().json;\nif (!['idle', 'processing', 'error'].includes(status.status)) {\n  throw new Error('Unexpected /status response; inspect the HTTP node output');\n}\nconst poll = $runIndex + 1;\nconst stillProcessing = status.status === 'processing';\nconst timedOut = stillProcessing && poll >= config.maxPolls;\nlet outcome = 'processing';\nif (timedOut) outcome = 'monitor_timeout';\nelse if (status.status === 'error') outcome = 'run_error';\nelse if (status.status === 'idle') {\n  if (status.error) outcome = 'finished_with_job_errors';\n  else if (status.stage === 'Stopped' || Number(status.pending) > 0) outcome = 'incomplete_or_stopped';\n  else if (status.stage !== 'Run finished') outcome = 'unconfirmed_idle';\n  else outcome = 'finished';\n}\nreturn [{json: {poll, outcome, continuePolling: stillProcessing && !timedOut,\n  trigger: $('Validate Start Response').first().json.trigger,\n  status, message: timedOut ? 'Monitoring limit reached. The Python worker may still be running; check its dashboard.' :\n    status.error || (outcome === 'incomplete_or_stopped' ? 'Processing stopped or pending jobs remain.' : outcome)}}];"
+      },
+      "id": "6b79be5a-5e74-59f8-842b-ee154c71757e",
+      "name": "Evaluate Processing Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0fe0b138-1b77-5607-a3dd-cb5731fafa3e",
+              "leftValue": "={{ $json.continuePolling }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1474328a-d6a7-53e9-98c8-eabc02fc171e",
+      "name": "Keep Polling?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1680,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2acd6ba2-c898-5fbb-873b-061a23aa6e5a",
+              "leftValue": "={{ $json.outcome === 'finished' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "024bd7eb-306e-56cc-85f9-fd5f3f96465f",
+      "name": "Run Finished Without Reported Errors?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1920,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const data = $input.first().json;\nreturn [{json: {...data, simulated: false,\n  note: 'Counts are the Python worker current snapshot, not per-run totals. Inspect Baserow Output URL for videos. The API has no run ID or per-job result endpoint.'}}];"
+      },
+      "id": "e3c61169-5756-52b5-b2b5-6fde31797e1f",
+      "name": "Live Run Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "={{ $json.outcome + \": \" + $json.message }}"
+      },
+      "id": "4512a926-2ed8-55fc-97f5-16b683ab6176",
+      "name": "Needs Attention",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        2200,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Real processing through the project API\n1. Start the project API with configured provider credentials.\n2. Set the URL in **Connection Settings**. Compose overlay default: `http://api:8000`.\n3. Select the same **Header Auth** credential on both HTTP nodes: `X-API-Key` = your `VIDEO_BUILDER_API_KEY`.\n\nThis workflow makes real requests and can incur transcription/upload costs. It contains no exported secrets.",
+        "width": 860,
+        "height": 340,
+        "color": 3
+      },
+      "id": "7b4ed26f-66e9-5066-af57-c815c7f5abc6",
+      "name": "Live Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## The complete engine runs in Python\nJob repository → audio buffer → timestamped transcription → footage plan → selected image buffer → ASS captions → FFmpeg render → Cloudinary upload → DONE / recovery.\n\nImport **poetry-shorts-visual-demo.json** to inspect those stages separately with sample data. The public API exposes only `/run` and `/status`; individual media stages are not HTTP endpoints.",
+        "width": 1150,
+        "height": 300,
+        "color": 4
+      },
+      "id": "db988114-fb20-5a3f-adb3-609dcba566c5",
+      "name": "Backend Stages",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        920,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Monitoring and cancellation\nThe start request is sent once without automatic retries. Status reads retry boundedly. Monitoring stops after maxPolls or a terminal status.\n\nStopping n8n or reaching its time limit does not stop the Python worker. Cancel from its owning dashboard/process. `already_running` observes the active run. No run IDs exist, so this is a status monitor, not per-run attribution.",
+        "width": 1150,
+        "height": 310,
+        "color": 5
+      },
+      "id": "5865b574-5b18-5231-9cc6-aa383e3a8b64",
+      "name": "Polling Boundary",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        920,
+        720
+      ]
+    }
+  ],
+  "connections": {
+    "Run Real Processing": {
+      "main": [
+        [
+          {
+            "node": "Connection Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Connection Settings": {
+      "main": [
+        [
+          {
+            "node": "Start Processing - GET run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Processing - GET run": {
+      "main": [
+        [
+          {
+            "node": "Validate Start Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Start Response": {
+      "main": [
+        [
+          {
+            "node": "Wait Between Polls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Between Polls": {
+      "main": [
+        [
+          {
+            "node": "Read Processing Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Processing Status": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Processing Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Processing Status": {
+      "main": [
+        [
+          {
+            "node": "Keep Polling?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep Polling?": {
+      "main": [
+        [
+          {
+            "node": "Wait Between Polls",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Finished Without Reported Errors?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Finished Without Reported Errors?": {
+      "main": [
+        [
+          {
+            "node": "Live Run Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Needs Attention",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 1800
+  },
+  "pinData": {},
+  "tags": []
+}

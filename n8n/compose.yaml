@@ -1,0 +1,20 @@
+# Use alongside the root compose.yaml; paths resolve from the project root.
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:2.44.5
+    profiles: [n8n]
+    init: true
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      GENERIC_TIMEZONE: UTC
+      TZ: UTC
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_SECURE_COOKIE: "false" # Local HTTP editor, published on loopback only.
+      N8N_DIAGNOSTICS_ENABLED: "false"
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./n8n:/workflows:ro
+
+volumes:
+  n8n-data:

@@ -1,0 +1,653 @@
+{
+  "name": "Poetry Shorts Maker - Full Visual Demo (no external calls)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "6ec0e83a-2f70-52c3-ba14-3c09ed08bb5e",
+      "name": "Run Demo",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const settings = {\n  injectFailure: true,\n  failureRow: 102,\n  failureStage: 'upload', // download, transcribe, plan, images, captions, render or upload\n  duration: 10,\n  minimumWordsForNewClip: 3,\n  fps: 30,\n  width: 1080,\n  height: 1920,\n};\nif (!['download', 'transcribe', 'plan', 'images', 'captions', 'render', 'upload'].includes(settings.failureStage)) {\n  throw new Error('Choose a supported failureStage');\n}\nreturn [{json: {simulated: true, settings}}];"
+      },
+      "id": "ef5237f5-d452-5bd5-a5ed-00f04ee25f53",
+      "name": "Demo Settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const settings = $input.first().json.settings;\nconst images = ['https://images.example.invalid/sky.jpg',\n                'https://images.example.invalid/forest.jpg',\n                'https://images.example.invalid/sea.jpg', 'https://images.example.invalid/mountain.jpg'];\nconst jobs = [\n  {row: 101, id: 'morning', status: 'NOT_PROCESSED'},\n  {row: 102, id: 'evening', status: 'NOT_PROCESSED'},\n  {row: 103, id: 'already-finished', status: 'DONE'},\n  {row: 104, id: 'after-failure', status: 'NOT_PROCESSED'},\n];\nreturn jobs.map(job => ({json: {simulated: true, settings, images,\n  job: {...job, voice_link: 'https://audio.example.invalid/' + job.row + '.wav'},\n  checkpoints: {}, history: [{stage: 'read_snapshot', result: 'simulated'}]},\n  pairedItem: {item: 0}}));"
+      },
+      "id": "44ad35c1-0cb8-5691-bb40-f06f2381368e",
+      "name": "Read Baserow Snapshot - Demo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        260
+      ],
+      "notes": "JobRepository + SourceCatalog: app/jobs.py and app/bootstrap.py",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "fc762c5b-9e08-57ad-83b6-22700bc7b4c6",
+      "name": "One Job at a Time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        720,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "33b4d205-d8eb-5c91-920e-e118762d6488",
+              "leftValue": "={{ $json.job.status === 'NOT_PROCESSED' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d176a228-383f-5c8c-a705-2996deab7d07",
+      "name": "Pending Job?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item, index) => ({json: {...item.json, outcome: 'skipped',\n  history: [...item.json.history, {stage: 'skip', result: item.json.job.status}]},\n  pairedItem: {item: index}}));"
+      },
+      "id": "06baf799-23b6-53fd-a571-fa3ca6fa9eb3",
+      "name": "Skip Finished or Unknown Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  const name = 'row-' + data.job.row + '-demo';\n  data.workspace = {work: 'temp/' + name, audio: 'buffer/voiceovers/' + name + '.audio',\n                    images: 'buffer/images/' + name, output: 'output/' + name + '.mp4'};\n  data.job.status = 'PROCESSING';\n  data.history.push({stage: 'PROCESSING', result: 'simulated'});\n  return {json: data, pairedItem: {item: index}};\n});"
+      },
+      "id": "e7aeedca-486c-563d-9af6-695f47da4ace",
+      "name": "Create Workspace and Mark PROCESSING",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        260
+      ],
+      "notes": "SIMULATION: JobRunner + Workspace; no files or Baserow rows are changed.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  if (!data.error) {\n    try {\n      if (data.settings.injectFailure && data.job.row === data.settings.failureRow &&\n          data.settings.failureStage === \"download\") {\n        throw new Error('Injected demo failure at ' + \"download\");\n      }\n      data.audio = {path: data.workspace.audio, duration: data.settings.duration,\n              simulated: true, file_exists: false};\nif (!Number.isFinite(data.audio.duration) || data.audio.duration <= 0) throw new Error('Invalid duration');\n      data.history.push({stage: \"download\", result: 'simulated'});\n    } catch (error) {\n      data.error = {stage: \"download\", message: String(error.message || error)};\n      data.history.push({stage: \"download\", result: 'failed', message: data.error.message});\n    }\n  }\n  return {json: data, pairedItem: {item: index}};\n});"
+      },
+      "id": "a442a38c-3923-5e2f-a5c6-eaba044a66a4",
+      "name": "Download and Probe Audio - Demo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        560
+      ],
+      "notes": "SIMULATION ONLY — maps to app/downloads.py + app/footage.py",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  if (!data.error) {\n    try {\n      if (data.settings.injectFailure && data.job.row === data.settings.failureRow &&\n          data.settings.failureStage === \"transcribe\") {\n        throw new Error('Injected demo failure at ' + \"transcribe\");\n      }\n      data.transcript = {text: 'Morning light fills the sky. Breathe. We begin again.', words: [\n  {text: 'Morning', start: 0.4, end: 0.8}, {text: 'light', start: 1, end: 1.3},\n  {text: 'fills', start: 1.4, end: 1.6}, {text: 'the', start: 1.7, end: 1.9},\n  {text: 'sky.', start: 2, end: 2.3}, {text: 'Breathe.', start: 3, end: 3.4},\n  {text: 'We', start: 5, end: 5.3}, {text: 'begin', start: 5.4, end: 5.7},\n  {text: 'again.', start: 5.9, end: 6.3}], simulated: true};\nif (data.audio.duration < 6.3) throw new Error('Demo transcript needs at least 6.3 seconds of audio');\ndata.checkpoints['transcript.json'] = data.transcript;\n      data.history.push({stage: \"transcribe\", result: 'simulated'});\n    } catch (error) {\n      data.error = {stage: \"transcribe\", message: String(error.message || error)};\n      data.history.push({stage: \"transcribe\", result: 'failed', message: data.error.message});\n    }\n  }\n  return {json: data, pairedItem: {item: index}};\n});"
+      },
+      "id": "eb20c576-fff3-5494-8c77-36e28f86e03b",
+      "name": "Transcribe with Word Timestamps - Demo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        560
+      ],
+      "notes": "SIMULATION ONLY — maps to app/transcription.py",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  if (!data.error) {\n    try {\n      if (data.settings.injectFailure && data.job.row === data.settings.failureRow &&\n          data.settings.failureStage === \"plan\") {\n        throw new Error('Injected demo failure at ' + \"plan\");\n      }\n      const sentences = [];\nlet current = [];\nfor (const word of data.transcript.words) {\n  current.push(word);\n  if (/[.!?。！？][\"'”’»)]*$/.test(word.text)) {\n    sentences.push({words: current, start: current[0].start});\n    current = [];\n  }\n}\nfor (let i = 0; i < current.length; i += 20) {\n  const words = current.slice(i, i + 20);\n  sentences.push({words, start: words[0].start});\n}\nconst duration = data.audio.duration;\nconst starts = [0, ...new Set(sentences.filter(sentence =>\n  sentence.words.length >= data.settings.minimumWordsForNewClip && sentence.start > 0 &&\n  sentence.start < duration).map(sentence => sentence.start))].sort((a, b) => a - b);\nif (!data.images.length) throw new Error('No images');\ndata.plan = {duration, footage: starts.map((start, index) => ({\n  start, end: starts[index + 1] ?? duration,\n  source: {path: data.images[index % data.images.length], kind: 'image'}, offset: 0,\n})), captions: sentences.map((sentence, index) => ({\n  sentence: {...sentence, text: sentence.words.map(word => word.text).join(' ')},\n  end: sentences[index + 1]?.start ?? duration,\n}))};\n// Deliberately deterministic for inspection. Python uses random selection with an optional seed.\n      data.history.push({stage: \"plan\", result: 'simulated'});\n    } catch (error) {\n      data.error = {stage: \"plan\", message: String(error.message || error)};\n      data.history.push({stage: \"plan\", result: 'failed', message: data.error.message});\n    }\n  }\n  return {json: data, pairedItem: {item: index}};\n});"
+      },
+      "id": "758b714a-5ced-54c1-a50b-f653130a54e0",
+      "name": "Plan Sentences and Image Cuts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        560
+      ],
+      "notes": "SIMULATION ONLY — maps to app/timeline.py; demo uses deterministic image rotation",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  if (!data.error) {\n    try {\n      if (data.settings.injectFailure && data.job.row === data.settings.failureRow &&\n          data.settings.failureStage === \"images\") {\n        throw new Error('Injected demo failure at ' + \"images\");\n      }\n      const urls = [...new Set(data.plan.footage.map(interval => interval.source.path))];\ndata.selected_images = urls.map((url, index) => ({url,\n  path: data.workspace.images + '/image-' + String(index + 1).padStart(3, '0') + '.jpg',\n  decoded: 'simulated', file_exists: false}));\nconst local = new Map(data.selected_images.map(image => [image.url, image.path]));\ndata.plan.footage = data.plan.footage.map(interval => ({...interval,\n  source: {...interval.source, path: local.get(interval.source.path)}}));\n      data.history.push({stage: \"images\", result: 'simulated'});\n    } catch (error) {\n      data.error = {stage: \"images\", message: String(error.message || error)};\n      data.history.push({stage: \"images\", result: 'failed', message: data.error.message});\n    }\n  }\n  return {json: data, pairedItem: {item: index}};\n});"
+      },
+      "id": "2f158387-8565-5294-ad19-822ccc862742",
+      "name": "Buffer Selected Images - Demo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        560
+      ],
+      "notes": "SIMULATION ONLY — maps to app/images.py + source resolver in app/bootstrap.py",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  if (!data.error) {\n    try {\n      if (data.settings.injectFailure && data.job.row === data.settings.failureRow &&\n          data.settings.failureStage === \"captions\") {\n        throw new Error('Injected demo failure at ' + \"captions\");\n      }\n      data.caption_events = data.plan.captions.flatMap(caption => caption.sentence.words.map((word, index, words) => ({\n  start: word.start, end: words[index + 1]?.start ?? caption.end,\n  visible_text: words.slice(0, index + 1).map(entry => entry.text).join(' '),\n  reserved_layout_text: caption.sentence.text,\n})));\ndata.caption_style = {font: 'Special Elite', progressive: true, persist_during_silence: true};\n      data.history.push({stage: \"captions\", result: 'simulated'});\n    } catch (error) {\n      data.error = {stage: \"captions\", message: String(error.message || error)};\n      data.history.push({stage: \"captions\", result: 'failed', message: data.error.message});\n    }\n  }\n  return {json: data, pairedItem: {item: index}};\n});"
+      },
+      "id": "5c89550f-ce4a-5872-baf3-46d04d6f6c0f",
+      "name": "Build Progressive Caption Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        560
+      ],
+      "notes": "SIMULATION ONLY — maps to app/captions.py; event JSON preview, no ASS file is written",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  if (!data.error) {\n    try {\n      if (data.settings.injectFailure && data.job.row === data.settings.failureRow &&\n          data.settings.failureStage === \"render\") {\n        throw new Error('Injected demo failure at ' + \"render\");\n      }\n      let cursor = 0;\nfor (const interval of data.plan.footage) {\n  if (interval.start !== cursor || interval.end <= interval.start) throw new Error('Invalid footage coverage');\n  cursor = interval.end;\n}\nif (cursor !== data.audio.duration) throw new Error('Incomplete footage coverage');\ndata.rendered = {output: data.workspace.output, duration: data.audio.duration,\n  width: data.settings.width, height: data.settings.height, fps: data.settings.fps,\n  frames: Math.ceil(data.audio.duration * data.settings.fps), video_codec: 'h264', audio_codec: 'aac',\n  simulated: true, file_exists: false};\n      data.history.push({stage: \"render\", result: 'simulated'});\n    } catch (error) {\n      data.error = {stage: \"render\", message: String(error.message || error)};\n      data.history.push({stage: \"render\", result: 'failed', message: data.error.message});\n    }\n  }\n  return {json: data, pairedItem: {item: index}};\n});"
+      },
+      "id": "bdf94160-3700-5572-916b-f9c2bfe86c7e",
+      "name": "Render and Validate MP4 - Demo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        560
+      ],
+      "notes": "SIMULATION ONLY — maps to app/video_builder.py + app/ffmpeg.py; no encoder is executed",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  if (!data.error) {\n    try {\n      if (data.settings.injectFailure && data.job.row === data.settings.failureRow &&\n          data.settings.failureStage === \"render_checkpoint\") {\n        throw new Error('Injected demo failure at ' + \"render_checkpoint\");\n      }\n      data.checkpoints['rendered.json'] = {output: data.rendered.output, row: data.job.row,\n  audio: data.workspace.audio};\n      data.history.push({stage: \"render_checkpoint\", result: 'simulated'});\n    } catch (error) {\n      data.error = {stage: \"render_checkpoint\", message: String(error.message || error)};\n      data.history.push({stage: \"render_checkpoint\", result: 'failed', message: data.error.message});\n    }\n  }\n  return {json: data, pairedItem: {item: index}};\n});"
+      },
+      "id": "ade28066-a3c2-5195-ac02-d78a0935100b",
+      "name": "Save Render Checkpoint - Demo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        900
+      ],
+      "notes": "SIMULATION ONLY — maps to app/execution.py + app/artifacts.py",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  if (!data.error) {\n    try {\n      if (data.settings.injectFailure && data.job.row === data.settings.failureRow &&\n          data.settings.failureStage === \"upload_intent\") {\n        throw new Error('Injected demo failure at ' + \"upload_intent\");\n      }\n      data.checkpoints['upload.json'] = {public_id: 'poetry-shorts/row-' + data.job.row + '-demo',\n  output: data.rendered.output, row: data.job.row};\n      data.history.push({stage: \"upload_intent\", result: 'simulated'});\n    } catch (error) {\n      data.error = {stage: \"upload_intent\", message: String(error.message || error)};\n      data.history.push({stage: \"upload_intent\", result: 'failed', message: data.error.message});\n    }\n  }\n  return {json: data, pairedItem: {item: index}};\n});"
+      },
+      "id": "9c5312fd-d328-5848-b486-ca44f67d9c4d",
+      "name": "Save Upload Intent - Demo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        900
+      ],
+      "notes": "SIMULATION ONLY — maps to app/execution.py: intended identifier is known before upload",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  if (!data.error) {\n    try {\n      if (data.settings.injectFailure && data.job.row === data.settings.failureRow &&\n          data.settings.failureStage === \"upload\") {\n        throw new Error('Injected demo failure at ' + \"upload\");\n      }\n      data.uploaded = {url: 'https://cloudinary.example.invalid/video/row-' + data.job.row + '-demo.mp4',\n  public_id: data.checkpoints['upload.json'].public_id, bytes: 123456, confirmed: true, simulated: true};\ndata.checkpoints['uploaded.json'] = {...data.uploaded, output: data.rendered.output, row: data.job.row};\n      data.history.push({stage: \"upload\", result: 'simulated'});\n    } catch (error) {\n      data.error = {stage: \"upload\", message: String(error.message || error)};\n      data.history.push({stage: \"upload\", result: 'failed', message: data.error.message});\n    }\n  }\n  return {json: data, pairedItem: {item: index}};\n});"
+      },
+      "id": "3e26d27d-6890-5a93-889d-f73377de6883",
+      "name": "Cloudinary Upload - Demo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        900
+      ],
+      "notes": "SIMULATION ONLY — maps to app/uploads.py; fake URL, nothing is uploaded",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "71a55521-c687-514e-9a3d-01622ac2db05",
+              "leftValue": "={{ !$json.error && $json.uploaded?.confirmed === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1b2079fc-8775-59fc-a9f8-efcd7d1c5d8d",
+      "name": "Upload Confirmed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1680,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  data.job = {...data.job, status: 'DONE', output_file: data.rendered.output,\n    output_url: data.uploaded.url, error: ''};\n  data.outcome = 'completed';\n  data.history.push({stage: 'DONE', result: 'simulated'});\n  data.retention = {audio: true, images: true, output: true, temporary_workspace: false,\n                    simulated: true, files_exist: false};\n  return {json: data, pairedItem: {item: index}};\n});"
+      },
+      "id": "bebd468e-2de8-59e3-998a-9a4752ae1de6",
+      "name": "Mark DONE and Clean Temp - Demo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        820
+      ],
+      "notes": "app/execution.py; checkpoints above are retained in execution data for inspection",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  const error = data.error?.message ?? 'Upload was not confirmed';\n  data.checkpoints['failure.json'] = {row: data.job.row, error,\n    output: data.rendered?.output ?? '', uploaded_url: data.uploaded?.url ?? '', audio: data.workspace.audio};\n  data.job = {...data.job, status: 'FAILED', output_file: data.rendered?.output ?? '',\n    output_url: data.uploaded?.url ?? '', error};\n  data.outcome = 'failed';\n  data.history.push({stage: 'FAILED', result: 'simulated'});\n  data.retention = {temporary_workspace: true, complete_output: Boolean(data.rendered),\n                    simulated: true, files_exist: false};\n  return {json: data, pairedItem: {item: index}};\n});"
+      },
+      "id": "0340e918-83bd-5f02-a5f3-209f142bd04c",
+      "name": "Save Failure and Mark FAILED - Demo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        1080
+      ],
+      "notes": "app/execution.py; diagnostic persistence and FAILED update are best effort in Python",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const jobs = $input.all().map(item => item.json);\nreturn [{json: {simulated: true, files_created: false, external_calls: 0,\n  processed: jobs.filter(job => job.outcome !== 'skipped').length,\n  completed_this_run: jobs.filter(job => job.outcome === 'completed').length,\n  failed_this_run: jobs.filter(job => job.outcome === 'failed').length,\n  skipped: jobs.filter(job => job.outcome === 'skipped').length,\n  jobs, note: 'All output paths, uploads and status updates are simulated. Import the API runner for real processing.'},\n  pairedItem: jobs.map((_, item) => ({item}))}];"
+      },
+      "id": "47b62000-75b2-5df6-8bb3-f89212d39940",
+      "name": "Demo Results - Inspect Here",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        -220
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Full project visual demo\nImport and click **Execute workflow**. Every media/provider step is simulated. No credentials, downloads, files, paid calls or uploads.\n\nThe default sample includes two successful jobs, one upload failure and one skipped DONE row. Change **Demo Settings** to test another failure or disable injection.",
+        "width": 620,
+        "height": 300,
+        "color": 5
+      },
+      "id": "a01104de-f40a-5653-8275-d76746470bb6",
+      "name": "Start Here - Offline Demo",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## MediaPipeline\nInspect each Code node output for timestamps, footage intervals, selected image paths and progressive caption events.\n\nDemo image choices rotate deterministically; the Python engine uses random selection. Rendering here produces metadata, never an actual MP4.",
+        "width": 1500,
+        "height": 280,
+        "color": 4
+      },
+      "id": "655d9cd1-ef35-5c46-bb4f-ede2ea1b7299",
+      "name": "Python Media Pipeline",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1170,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## JobRunner and recovery\nA rendered output is retained when upload fails. DONE follows a confirmed upload. Both success and failure return to the sequential loop.\n\nThe real Python backend handles filesystem errors, network retries, cancellation and cross-process ownership; this canvas demonstrates their flow.",
+        "width": 930,
+        "height": 260,
+        "color": 3
+      },
+      "id": "38406f10-de74-5bad-a5b2-066319619d21",
+      "name": "Recovery Semantics",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1730,
+        1120
+      ]
+    }
+  ],
+  "connections": {
+    "Run Demo": {
+      "main": [
+        [
+          {
+            "node": "Demo Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Demo Settings": {
+      "main": [
+        [
+          {
+            "node": "Read Baserow Snapshot - Demo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Baserow Snapshot - Demo": {
+      "main": [
+        [
+          {
+            "node": "One Job at a Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One Job at a Time": {
+      "main": [
+        [
+          {
+            "node": "Demo Results - Inspect Here",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pending Job?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pending Job?": {
+      "main": [
+        [
+          {
+            "node": "Create Workspace and Mark PROCESSING",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip Finished or Unknown Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Finished or Unknown Status": {
+      "main": [
+        [
+          {
+            "node": "One Job at a Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Workspace and Mark PROCESSING": {
+      "main": [
+        [
+          {
+            "node": "Download and Probe Audio - Demo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download and Probe Audio - Demo": {
+      "main": [
+        [
+          {
+            "node": "Transcribe with Word Timestamps - Demo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe with Word Timestamps - Demo": {
+      "main": [
+        [
+          {
+            "node": "Plan Sentences and Image Cuts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Sentences and Image Cuts": {
+      "main": [
+        [
+          {
+            "node": "Buffer Selected Images - Demo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buffer Selected Images - Demo": {
+      "main": [
+        [
+          {
+            "node": "Build Progressive Caption Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Progressive Caption Events": {
+      "main": [
+        [
+          {
+            "node": "Render and Validate MP4 - Demo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render and Validate MP4 - Demo": {
+      "main": [
+        [
+          {
+            "node": "Save Render Checkpoint - Demo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Render Checkpoint - Demo": {
+      "main": [
+        [
+          {
+            "node": "Save Upload Intent - Demo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Upload Intent - Demo": {
+      "main": [
+        [
+          {
+            "node": "Cloudinary Upload - Demo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cloudinary Upload - Demo": {
+      "main": [
+        [
+          {
+            "node": "Upload Confirmed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Confirmed?": {
+      "main": [
+        [
+          {
+            "node": "Mark DONE and Clean Temp - Demo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Failure and Mark FAILED - Demo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark DONE and Clean Temp - Demo": {
+      "main": [
+        [
+          {
+            "node": "One Job at a Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Failure and Mark FAILED - Demo": {
+      "main": [
+        [
+          {
+            "node": "One Job at a Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 1800
+  },
+  "pinData": {},
+  "tags": []
+}
