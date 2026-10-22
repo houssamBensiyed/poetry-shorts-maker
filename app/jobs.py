@@ -1,4 +1,10 @@
-"""Baserow is the online job list; storage and rendering remain independent."""
+"""Adapt Baserow rows to job persistence and the reusable image catalog.
+
+Requests use user field names for the documented schema, while updates address
+Baserow's internal numeric row IDs. Editable ID labels and table positions never
+identify writes. Authentication and bounded retries stay inside this adapter so
+application services depend only on repository and catalog contracts.
+"""
 
 import logging
 import os
@@ -14,7 +20,20 @@ FIELDS = ("ID", "Audio URL", "Status", "Output File", "Output URL", "Error")
 
 
 class JobTable:
+    """Read audio/image tables and acknowledge lifecycle updates through Baserow.
+
+    A single adapter supports both tables in the default composition. STATUSES
+    includes legacy COMPLETED; new successful work writes DONE. FIELDS lists
+    the required editable audio-table columns.
+    """
+
     def __init__(self, config, stop=None):
+        """Read the token and construct the audio-table endpoint without network I/O.
+
+        config supplies api_url, table_id, images_table_id and api_key_env. stop is
+        used for table reads; request/update accept their own optional event so
+        recovery and completion can deliberately proceed after cancellation.
+        """
         self.config, self.stop = config, stop
         if not config["table_id"]:
             raise ValueError("Set baserow.table_id in config.yaml")
@@ -24,6 +43,17 @@ class JobTable:
         self.url = config["api_url"].rstrip("/") + f"/api/database/rows/table/{config['table_id']}/"
 
     def request(self, method, url, stop=None, **kwargs):
+        """Send an authenticated request and return decoded successful JSON.
+
+        method/url select the Baserow operation; kwargs are forwarded to httpx.
+        Use a 30-second timeout and disable redirects. Retry transport failures and
+        selected transient HTTP statuses up to four total attempts. stop controls
+        only this call, not self.stop: None allows a recovery write to finish even
+        when a run was cancelled. Error messages omit credentials and response bodies.
+
+        Raise ValueError for permanent HTTP failures or RuntimeError when retries
+        are exhausted. JSON decoding errors also propagate to the calling policy.
+        """
         with httpx.Client(timeout=30, follow_redirects=False) as client:
             for attempt in range(4):
                 if stop is not None:
@@ -52,6 +82,13 @@ class JobTable:
                     stop.wait(2**attempt)
 
     def rows(self, table_id):
+        """Yield rows from the requested numeric table ID in pages of 200.
+
+        Build page requests against the configured server rather than following
+        returned pagination URLs with the token. Reject duplicate row IDs, empty
+        continuation pages and more than 10,000 pages to avoid silent duplication
+        or endless traversal. This is not a transactionally consistent remote snapshot.
+        """
         seen = set()
         url = self.config["api_url"].rstrip("/") + f"/api/database/rows/table/{table_id}/"
         for page in range(1, 10001):
@@ -74,6 +111,12 @@ class JobTable:
         raise ValueError("Baserow table exceeds the supported pagination limit")
 
     def jobs(self):
+        """Return audio-table rows as Job values after checking required fields.
+
+        Normalize text and single-select statuses. Preserve unknown statuses with a
+        warning; the coordinator counts/selects recognized values and skips the rest.
+        Read all rows once to form the run's scheduling and display-count snapshot.
+        """
         jobs = []
         for row in self.rows(self.config["table_id"]):
             if any(field not in row for field in FIELDS):
@@ -92,6 +135,12 @@ class JobTable:
         return jobs
 
     def image_urls(self):
+        """Return distinct usable image links in first-seen order.
+
+        Require the Image URL column, skip syntactically invalid links with row-based
+        warnings, and fail when no usable candidates remain. Actual image bytes are
+        downloaded and decoded only after planning selects them.
+        """
         from app.downloads import validate_url
 
         urls, total = [], 0
@@ -115,6 +164,14 @@ class JobTable:
         return urls
 
     def update(self, job, status, output="", error="", stop=None, uploaded_url=""):
+        """PATCH lifecycle fields on job.row and wait for acknowledgement.
+
+        status must belong to STATUSES. output and uploaded_url identify a completed
+        local file and confirmed remote upload; error is limited to 1,000 characters.
+        All result fields are written, including empty defaults, so PROCESSING clears
+        stale results. Pass stop for interruptible writes; omit it for DONE/FAILED so
+        cancellation cannot prevent completion or a recovery attempt.
+        """
         if status not in STATUSES:
             raise ValueError("Invalid job status")
         # Use Baserow's stable row ID, never the editable ID label or table position.

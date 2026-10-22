@@ -1,4 +1,10 @@
-"""Cancellable FFmpeg subprocess execution shared by media adapters."""
+"""Run FFmpeg with responsive cancellation, progress and retained diagnostics.
+
+A reader thread drains FFmpeg's machine-readable progress stream into a queue.
+The controlling thread polls that queue so a silent encoder cannot prevent stop
+checks. Stderr goes to a per-stage file, keeping diagnostics out of the progress
+parser and available in a failed job's retained workspace.
+"""
 
 import logging
 import queue
@@ -12,6 +18,21 @@ log = logging.getLogger("video_builder")
 
 
 def run_ffmpeg(args, cwd, stop, duration, progress, label):
+    """Execute one FFmpeg stage and return only after successful process exit.
+
+    Args:
+        args: FFmpeg arguments appended after standard noninteractive/progress flags.
+        cwd: Existing working directory holding outputs and the stage log.
+        stop: Cooperative cancellation event polled while progress is consumed.
+        duration: Positive expected stage duration in seconds for progress scaling.
+        progress: Non-throwing callback receiving clamped percentages from 0 to 100.
+        label: Human-readable stage name, also used to name its diagnostic log.
+
+    Convert out_time_us progress into percentages. On nonzero exit, raise
+    RuntimeError with the last 3,000 diagnostic characters. On cancellation or
+    callback error, terminate the subprocess, wait up to three seconds, then kill
+    if necessary. Close stdout and join the reader before leaving; retain the log.
+    """
     check_cancel(stop)
     log.info("%s", label)
     log_path = Path(cwd) / (label.replace(" ", "_") + ".log")
@@ -26,6 +47,11 @@ def run_ffmpeg(args, cwd, stop, duration, progress, label):
         lines = queue.Queue()
 
         def read():
+            """Drain stdout to the queue and always send an end-of-stream sentinel.
+
+            Running this blocking read separately lets the controlling thread continue
+            cancellation checks even when FFmpeg has not emitted another progress line.
+            """
             try:
                 for line in proc.stdout:
                     lines.put(line)

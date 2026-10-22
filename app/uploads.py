@@ -1,4 +1,10 @@
-"""Signed, chunked video uploads to Cloudinary with bounded transient retries."""
+"""Publish videos through signed, bounded-retry Cloudinary chunk uploads.
+
+The intended public ID is derived before transfer and checkpointed by JobRunner.
+Each chunk shares an upload session ID and byte-range headers. A successful HTTP
+response alone is insufficient: the final response must confirm the expected
+video, public ID, byte count and public HTTPS URL before completion is reported.
+"""
 
 import logging
 import os
@@ -16,7 +22,15 @@ log = logging.getLogger("video_builder")
 
 
 class Uploader:
+    """Upload completed local MP4s while keeping credentials inside the adapter."""
+
     def __init__(self, config, stop):
+        """Load Cloudinary credentials and retain the shared stop event.
+
+        config provides cloud_name, environment-variable names, folder, chunk_mb and
+        timeout_seconds. Raise ValueError for missing account/key/secret; no upload
+        request is made during construction.
+        """
         self.config, self.stop = config, stop
         self.api_key = os.environ.get(config["api_key_env"], "")
         self.api_secret = os.environ.get(config["api_secret_env"], "")
@@ -26,10 +40,31 @@ class Uploader:
             )
 
     def public_id(self, path):
+        """Return the configured folder prefix plus the local filename stem.
+
+        No network work occurs. Workspace filenames include a per-attempt UUID,
+        yielding a stable intended ID for that attempt without relying on display labels.
+        """
         prefix = self.config["folder"].strip("/")
         return f"{prefix}/{Path(path).stem}" if prefix else Path(path).stem
 
     def upload(self, path, progress=lambda value: None):
+        """Upload a nonempty MP4 and return its confirmed URL, public ID and bytes.
+
+        Args:
+            path: Completed local video, read in configured MiB-sized chunks.
+            progress: Percentage callback; 100 is emitted only after final validation.
+
+        Sign each request with Cloudinary's helper and overwrite=false. Retry each
+        chunk up to four times on transport or selected transient HTTP failures,
+        retaining the same session ID and byte range. Require done=false from
+        intermediate responses, then validate final identity, type, size and HTTPS URL.
+
+        Check cancellation before chunks and attempts, but preserve a final confirmed
+        result when Stop arrives with its response so JobRunner can commit DONE.
+        Raise on incomplete or ambiguous completion; inspect upload.json before a
+        manual retry because a remote object may exist despite a local error.
+        """
         path = Path(path)
         size = path.stat().st_size
         if size <= 0:

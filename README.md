@@ -475,6 +475,33 @@ classDiagram
 | [`cancellation.py`](app/cancellation.py) / [`ffmpeg.py`](app/ffmpeg.py) | Cooperative cancellation and cancellable subprocess execution |
 | [`config.py`](app/config.py) | YAML validation and separately composable provider checks |
 
+### Reading the source
+
+The Python application modules, classes and functions include docstrings explaining
+what they do and why their responsibilities are separate. The larger operations
+describe inputs, outputs, filesystem/network effects, cancellation and failure
+handling. Data-model docstrings explain field meanings and timing units; protocol
+docstrings define the behavior replacement providers must preserve.
+
+Follow this reading order to trace a complete job:
+
+1. [`bootstrap.py`](app/bootstrap.py) assembles the providers without starting work,
+   allowing the dashboard to open before credentials are ready.
+2. [`processor.py`](app/processor.py) owns the worker and shared queue lock so the
+   dashboard and API cannot process the same queue concurrently on shared lock storage.
+3. [`execution.py`](app/execution.py) records render/upload checkpoints and waits for
+   an acknowledged `DONE` update so a later failure retains evidence for recovery.
+4. [`pipeline.py`](app/pipeline.py) orders media preparation independently of remote
+   status and publication, making individual media dependencies replaceable.
+5. [`timeline.py`](app/timeline.py), [`captions.py`](app/captions.py) and
+   [`video_builder.py`](app/video_builder.py) explain sentence-based image changes,
+   stable word-reveal layout and validation before the final MP4 becomes visible.
+
+An editor's hover/help view displays these docstrings. For example, inspect the job
+lifecycle locally with `.venv/bin/python -m pydoc app.execution.JobRunner.run`.
+See the [documentation conventions](docs/ARCHITECTURE.md#source-documentation)
+when changing behavior or adding an adapter.
+
 ## Project layout
 
 ```text

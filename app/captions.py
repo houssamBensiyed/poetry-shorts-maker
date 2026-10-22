@@ -1,5 +1,9 @@
-"""ASS progressive reveal with an identical full-sentence layout in every event.
-Hidden words retain their layout space but have fully transparent fill AND outline.
+"""Write ASS subtitles with word reveals that preserve sentence layout.
+
+Each event contains every word in the sentence, with future words made fully
+transparent, including their outlines. Keeping their layout space prevents text
+from shifting as words appear. Pillow measures a conservative fit; libass later
+renders the same full-sentence line breaks into the finished video.
 """
 
 from pathlib import Path
@@ -8,6 +12,17 @@ from PIL import ImageFont
 
 
 def layout(words, config, video):
+    """Choose the largest fitting font size and return (size, word-index lines).
+
+    words contains one sentence; config supplies caption settings and video
+    supplies output dimensions. Greedily wrap at the configured word count or
+    measured width, shrinking from font_size down to 8 pixels if needed. Reserve
+    ten percent of usable width for Pillow/libass shaping differences and include
+    safe margins, outlines and estimated line height in fit decisions.
+
+    Raise ValueError if no size fits. All reveal events reuse this layout so
+    already visible words remain in the same position.
+    """
     cap = config
     usable = video["width"] - 2 * cap["safe_margin"] - 2 * cap["outline_width"]
     height = video["height"] - 2 * cap["safe_margin"]
@@ -39,16 +54,23 @@ def layout(words, config, video):
 
 
 def ass_time(seconds):
+    """Format seconds as an ASS H:MM:SS.cc timestamp rounded to centiseconds."""
     cs = round(seconds * 100)
     return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
 
 
 def ass_color(color):
+    """Convert validated #RRGGBB to ASS opaque &H00BBGGRR color order."""
     return "&H00" + color[5:7] + color[3:5] + color[1:3]
 
 
 def escape(text):
     # Prevent transcription from introducing ASS overrides or line breaks.
+    """Escape transcript text so it cannot add ASS overrides or line breaks.
+
+    Protect braces/backslashes and flatten literal newlines. A zero-width space
+    after a backslash prevents user text from becoming an ASS control sequence.
+    """
     return (
         text.replace("\\", "\\\u200b")
         .replace("{", "\\{")
@@ -59,6 +81,20 @@ def escape(text):
 
 
 def write_ass(plan, cap, video, path):
+    """Write UTF-8 ASS captions for a validated timeline to path.
+
+    Args:
+        plan: Caption units with word start times and persistence end times.
+        cap: Validated caption style, font, alignment and safe-area settings.
+        video: Output width/height defining the ASS coordinate space.
+        path: Destination subtitle file; its parent must already exist.
+
+    Emit cumulative word events using the same complete layout, leaving future
+    fill and outlines transparent. Hold the final event until the next sentence
+    or audio end. Skip events rounded to zero centiseconds because the following
+    cumulative event includes those words. Reject unsafe style font names; layout
+    and filesystem failures propagate to the media workflow.
+    """
     alignment = {"top": 8, "center": 5, "bottom": 2}[cap["position"]]
     x = video["width"] / 2
     y = {

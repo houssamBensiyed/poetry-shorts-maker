@@ -164,6 +164,34 @@ Use `dataclasses.replace(build_media_pipeline(config, stop), transcriber=...)` t
 
 Atomic JSON replacement prevents partially written documents from being observed. It does not provide power-loss durability or an atomic transaction with either external service. See the [review](CODE_REVIEW.md#remaining-limitations-and-decisions) and [operations recovery instructions](operations.md#recovery) before adding automatic retries.
 
+## Source documentation
+
+Application docstrings describe both behavior and its purpose. Start with a module's
+docstring for its responsibility, then read the relevant class or function for its
+contract. Larger operations document inputs, returned values, side effects and
+failure/cancellation behavior; small helpers explain the specific rule they enforce.
+These are available through editor hover, `help()` and `python -m pydoc`.
+
+When changing or extending the application:
+
+- Explain why a boundary or rule exists, especially when it protects completion,
+  timing, recovery or ownership. Describe the final behavior instead of change history.
+- Document seconds versus percentages, original versus converted audio, stable row
+  IDs versus display labels, and unresolved URLs versus buffered source paths.
+- State when a function performs network/filesystem work, what it leaves behind on
+  failure, and whether an omitted stop event deliberately permits recovery writes.
+- Keep provider requirements in adapter docstrings and shared behavioral promises
+  in protocol docstrings. Structural typing checks method shapes, not those promises.
+- Distinguish validation actually performed from caller assumptions. A data-model
+  constructor does not validate its values, an HTTP acknowledgement does not prove
+  full upload completion, and an atomic rename does not guarantee power-loss durability.
+- Update the corresponding docstrings whenever behavior changes. Keep credentials,
+  private media links and live paid requests out of documentation examples.
+
+The [README source reading order](../README.md#reading-the-source) follows composition,
+coordination, job recovery and media generation. The operational recovery procedures
+remain in [operations.md](operations.md#recovery).
+
 ## Development checks
 
 Use Python 3.13 (the Docker runtime) or 3.14 with FFmpeg/FFprobe installed:

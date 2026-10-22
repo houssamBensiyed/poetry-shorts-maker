@@ -1,3 +1,11 @@
+"""Render resolved timelines into validated H.264/AAC vertical MP4s.
+
+Normalize each visual interval to a common size/rate, concatenate those segments,
+burn ASS captions with the bundled font, and mux the original voiceover. Shared
+frame boundaries avoid accumulating rounding error between intervals. Only a
+probed, validated partial output is atomically renamed to the final destination.
+"""
+
 import json
 import logging
 import math
@@ -16,6 +24,29 @@ log = logging.getLogger("video_builder")
 
 
 def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: None):
+    """Encode a timeline and return the finalized output Path.
+
+    Args:
+        plan: Validated timeline with readable local image/video sources.
+        audio: Buffered original audio, used instead of the transcription FLAC.
+        output: Final MP4 destination; its parent is created when needed.
+        workdir: Workspace for plan.json, copied font, ASS, segments and logs.
+        config: Full config containing video, captions and footage rules.
+        stop: Optional cancellation event; an unset event is created if omitted.
+        progress: Non-throwing callback receiving 0..100 across both render phases.
+
+    Revalidate timeline invariants before encoding. Scale/crop sources to fill
+    the output, loop images or short videos, and quantize shared cut boundaries
+    once. Segment normalization occupies the first half of progress; caption
+    burn-in/audio muxing occupies the second half. Retain intermediates for the
+    lifecycle runner to clean only after acknowledged job completion.
+
+    Encode to a sibling .partial.mp4, then probe audio/video presence, H.264/AAC
+    codecs, resolution, frame rate and duration within one frame plus 2 ms.
+    Check cancellation and report completion before atomically finalizing output.
+    Remove the partial file on exit. Raise on invalid plans, missing tools/font,
+    encoder/probe failure or cancellation; never raise after successful rename.
+    """
     validate_plan(
         plan,
         [w for c in plan.captions for w in c.sentence.words],

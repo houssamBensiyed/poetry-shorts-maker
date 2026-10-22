@@ -1,3 +1,11 @@
+"""Expose manual processing controls and live status through Textual.
+
+The UI polls snapshots rather than touching worker state directly. Queue refresh
+runs in a background worker so network reads do not freeze the terminal, while
+start/stop delegate lifecycle ownership to Processor. Opening the dashboard does
+not automatically contact providers or start jobs.
+"""
+
 import logging
 
 from textual.app import App, ComposeResult
@@ -9,17 +17,28 @@ log = logging.getLogger("video_builder")
 
 
 class ConfirmExit(ModalScreen):
+    """Ask whether active local processing should stop before the UI exits."""
+
     def compose(self):
+        """Yield the confirmation message and explicit stop/keep-processing buttons."""
         yield Static("Processing is active. Stop safely and exit?")
         with Horizontal():
             yield Button("Stop and exit", id="confirm", variant="error")
             yield Button("Keep processing", id="keep")
 
     def on_button_pressed(self, event):
+        """Dismiss the modal with True only for the stop-and-exit button."""
         self.dismiss(event.button.id == "confirm")
 
 
 class Dashboard(App):
+    """Display processing state, incremental logs and explicit manual actions.
+
+    The refresh timer keeps the screen responsive during worker activity. Remote
+    lock holders are shown through Processor.status, while stop applies only to
+    this instance's worker. Provider logic remains outside the interface.
+    """
+
     TITLE = "AI VIDEO BUILDER"
     CSS = """
     Screen { layout: vertical; }
@@ -37,6 +56,11 @@ class Dashboard(App):
     BINDINGS = [("q", "request_exit", "Exit"), ("ctrl+c", "request_exit", "Exit")]
 
     def __init__(self, processor, live_logs):
+        """Attach the shared processor and live-log handler without starting work.
+
+        Track the last displayed log sequence and whether a confirmed graceful exit
+        is pending; the periodic refresh completes exit after the worker stops.
+        """
         super().__init__()
         self.processor = processor
         self.live_logs = live_logs
@@ -44,6 +68,11 @@ class Dashboard(App):
         self.exiting = False
 
     def compose(self) -> ComposeResult:
+        """Yield status, counters, job details, progress, logs and action buttons.
+
+        Disable markup for job text and logs because source/provider strings should
+        appear literally instead of being interpreted as terminal formatting.
+        """
         yield Header()
         yield Static("IDLE", id="status")
         yield Static("", id="stats")
@@ -59,6 +88,7 @@ class Dashboard(App):
         yield Footer()
 
     def on_mount(self):
+        """Start 200 ms display polling and show the initial idle snapshot."""
         self.set_interval(0.2, self.refresh_display)
         log.info(
             "Dashboard ready. Configure Baserow settings and add footage, then Start Processing."
@@ -66,6 +96,12 @@ class Dashboard(App):
         self.refresh_display()
 
     def refresh_display(self):
+        """Refresh widgets and append unseen log messages from detached snapshots.
+
+        Use indeterminate progress when an active stage has no render percentage.
+        Disable actions inappropriate for active/exiting state, including stopping an
+        external process. Finish a confirmed exit once the local worker has ended.
+        """
         state = self.processor.status()
         active = state["status"] == "processing"
         color = {"idle": "green", "processing": "yellow", "error": "red"}.get(
@@ -93,6 +129,11 @@ class Dashboard(App):
             self.exit()
 
     def on_button_pressed(self, event):
+        """Dispatch user controls to the processor or UI log/exit actions.
+
+        Repository refresh uses a Textual thread worker to keep network waits away
+        from the UI event loop. Start delegates contention checks to Processor.
+        """
         action = event.button.id
         if action == "start":
             if not self.processor.start():
@@ -111,6 +152,11 @@ class Dashboard(App):
             self.action_request_exit()
 
     def refresh_jobs(self):
+        """Read job counts in the background and log any repository failure.
+
+        Processor.refresh records visible error state; catching here prevents an
+        ordinary configuration/network problem from becoming an unhandled UI error.
+        """
         try:
             self.processor.refresh()
             log.info("Job counts refreshed")
@@ -118,15 +164,22 @@ class Dashboard(App):
             log.exception("Cannot refresh Baserow")
 
     def action_request_exit(self):
+        """Open confirmation for active local work, or exit immediately when idle."""
         if self.processor.active:
             self.push_screen(ConfirmExit(), self.confirm_exit)
         else:
             self.exit()
 
     def action_quit(self):
+        """Route Textual's quit action through the same active-work exit policy."""
         self.action_request_exit()
 
     def confirm_exit(self, confirmed):
+        """Request cooperative stop after confirmation and let polling finish exit.
+
+        Returning from the modal without confirmation leaves processing active.
+        Waiting through the timer keeps the UI alive while worker cleanup completes.
+        """
         if confirmed:
             self.exiting = True
             self.processor.stop()

@@ -1,4 +1,10 @@
-"""Download and validate images before they become eligible footage."""
+"""Buffer and decode only the still images selected by a media plan.
+
+URLs and filename extensions cannot establish usable pixels. Pillow verifies and
+fully decodes each download before its path enters the resolved timeline. The
+format allowlist and decompression-bomb handling reject unsupported, animated,
+corrupt or excessively large inputs before expensive video encoding.
+"""
 
 import warnings
 from pathlib import Path
@@ -12,6 +18,21 @@ EXTENSIONS = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "BMP": ".bmp"}
 
 
 def download_images(urls, directory, downloader, stop):
+    """Return validated local image Sources for distinct URLs in first-use order.
+
+    Args:
+        urls: Selected remote image links, possibly repeated across intervals.
+        directory: Per-attempt buffer directory, created as needed.
+        downloader: Adapter that writes a complete file to the requested path.
+        stop: Run-level cancellation event checked before each image.
+
+    Download to neutral .download names, detect JPEG/PNG/WebP/BMP from content,
+    verify and reopen to force pixel decoding, then rename with the detected
+    extension. Promote decompression warnings to errors and remove raw files on
+    every exit. Earlier validated images remain if a later image fails, providing
+    recovery evidence. Raise ValueError for invalid image content; transfer and
+    cancellation failures propagate from their respective adapters.
+    """
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     sources = []

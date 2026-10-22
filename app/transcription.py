@@ -1,4 +1,10 @@
-"""Hosted Whisper transcription. No model weights or local inference runtime."""
+"""Request hosted timestamped transcription and normalize its response.
+
+The provider must accept the configured multipart transcription format and return
+text, word timestamps and segment timestamps. No model weights are downloaded.
+A temporary mono 16 kHz FLAC gives the API a predictable input format while the
+original buffered audio remains the finished video's voiceover.
+"""
 
 import logging
 import os
@@ -15,10 +21,21 @@ log = logging.getLogger("video_builder")
 
 
 def normalize_response(data, duration):
-    """Restore punctuation from transcript text when the word array omits it.
+    """Restore transcript punctuation while preserving provider word timestamps.
 
-    Alignment must match every recognized letter/digit; otherwise fail rather
-    than inventing words or timestamps. Works across API segment boundaries.
+    Args:
+        data: Decoded API object containing text, words and segments arrays.
+        duration: Positive original audio duration, bounding all timestamps.
+
+    Case-fold and align every recognized letter/digit between full text and word
+    tokens before slicing punctuation back into words. Alignment crosses segment
+    boundaries so provider segmentation cannot dictate sentence cuts. Validate
+    word ordering and segment bounds, then return an immutable Transcript wrapper.
+    Segment dictionaries remain available for recovery diagnostics.
+
+    Raise ValueError for mismatched text, missing speech timestamps, invalid
+    shapes or out-of-range timing. Empty speech is valid; recognized words require
+    segments. Never invent timings to make an incompatible response appear usable.
     """
     validate_words([], duration)
     if not isinstance(data, dict):
@@ -81,6 +98,11 @@ def normalize_response(data, duration):
 
 
 def timestamp(value):
+    """Convert a numeric value or numeric string to seconds, rejecting booleans.
+
+    Raise ValueError for unsupported or unconvertible values. Finiteness and
+    audio bounds are enforced by the caller, not by this conversion helper.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise ValueError("Transcription API returned an invalid timestamp")
     try:
@@ -90,10 +112,31 @@ def timestamp(value):
 
 
 class Transcriber:
+    """Convert buffered audio and call a configured hosted transcription endpoint."""
+
     def __init__(self, config):
+        """Retain provider settings without checking credentials or making requests."""
         self.config = config
 
     def transcribe(self, path, duration, stop, workdir=None):
+        """Return validated speech timing for a local original audio file.
+
+        Args:
+            path: Audio file readable by FFmpeg, regardless of filename extension.
+            duration: Probed original duration in seconds.
+            stop: Cancellation event checked between preparation/request/retry stages.
+            workdir: Optional scratch directory; defaults to the audio file's parent.
+
+        Read the API key from the configured environment variable. Prepare mono
+        16 kHz FLAC, enforce this adapter's 24,000,000-byte upload ceiling, and request
+        verbose JSON with word and segment timing. Retry transport/transient HTTP
+        failures up to four total attempts, reopening the file for each request.
+        Disable redirects so credentials stay on the configured request endpoint.
+
+        Always remove transcription.flac, retaining the original audio. Conversion,
+        configuration, cancellation and response-validation exceptions propagate.
+        Retried requests may be billed by a provider even after an ambiguous timeout.
+        """
         check_cancel(stop)
         if not self.config["api_url"] or not self.config["model"]:
             raise ValueError(

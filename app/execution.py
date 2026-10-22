@@ -1,4 +1,10 @@
-"""One job's lifecycle, publication and recovery policy."""
+"""Apply one job's completion, publication and failure-recovery policy.
+
+Local rendering, remote upload and repository updates cannot share a transaction.
+The runner therefore checkpoints each boundary and preserves completed outputs
+when later work fails. DONE means both a confirmed upload and an acknowledged
+repository write; cleanup happens only after that acknowledgement.
+"""
 
 import logging
 from collections.abc import Callable, Sequence
@@ -16,6 +22,8 @@ log = logging.getLogger("video_builder")
 
 
 class MediaWorkflow(Protocol):
+    """Produce local media without owning job status or publishing policy."""
+
     def run(
         self,
         job: Job,
@@ -23,11 +31,31 @@ class MediaWorkflow(Protocol):
         sources: Sequence[Source],
         stop: Event,
         report: Reporter,
-    ) -> None: ...
+    ) -> None:
+        """Create a finalized video at workspace.output or raise before completion.
+
+        Use the supplied candidate sources, stop event and non-throwing reporter.
+        The workspace has already been prepared and PROCESSING acknowledged. Do not
+        raise after output finalization: the runner treats media failures as incomplete.
+        """
+        ...
 
 
 @dataclass
 class JobRunner:
+    """Coordinate a single job across media, publication and persistence.
+
+    Attributes:
+        media: Workflow responsible for producing a validated local output.
+        publisher: Adapter exposing the intended ID before confirmed upload.
+        workspace: Factory allocating fresh local paths for each attempt.
+        stop: Run-level cancellation event used by interruptible work.
+        report: Non-throwing stage/error callback, normally Processor.update.
+
+    Expected per-job exceptions return False so later jobs can still run.
+    Checkpoints support manual reconciliation rather than automatic resumption.
+    """
+
     media: MediaWorkflow
     publisher: VideoPublisher
     workspace: Callable[[Job], Workspace]
@@ -35,6 +63,23 @@ class JobRunner:
     report: Reporter
 
     def run(self, job: Job, repository: JobRepository, sources: Sequence[Source]) -> bool:
+        """Process one job and return whether DONE was acknowledged.
+
+        Args:
+            job: Repository snapshot with the stable row ID and audio link.
+            repository: Adapter used for PROCESSING, DONE and FAILED writes.
+            sources: Media candidate snapshot supplied to the workflow.
+
+        Create a unique workspace, acknowledge PROCESSING, run media, and record
+        rendered.json. Save the intended remote ID in upload.json before upload,
+        then the confirmed result in uploaded.json before committing DONE. Completion
+        and failure writes omit the stop event so cancellation cannot discard an
+        already confirmed upload or prevent an independent recovery attempt.
+
+        On exception, attempt failure.json and FAILED independently. Preserve an MP4
+        after the media workflow has returned; remove incomplete output otherwise.
+        Temporary cleanup errors after DONE are logged and still return True.
+        """
         workspace = None
         completed_output = uploaded_url = ""
         marked = False
@@ -68,6 +113,7 @@ class JobRunner:
             last_bucket = -1
 
             def progress(value: float) -> None:
+                """Log upload progress only when another ten-percent bucket is reached."""
                 nonlocal last_bucket
                 bucket = int(value) // 10
                 if bucket > last_bucket:

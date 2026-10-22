@@ -1,4 +1,10 @@
-"""Media preparation independent of job storage, publication and threading."""
+"""Prepare a video's media independently of storage and publication policy.
+
+The pipeline downloads original audio, probes its clock, transcribes speech,
+plans the timeline, resolves selected sources, and renders. It records the
+transcript but leaves status transitions, upload checkpoints and cleanup to
+JobRunner. Injected dependencies make media stages independently replaceable.
+"""
 
 import logging
 from collections.abc import Callable, Sequence
@@ -17,6 +23,20 @@ log = logging.getLogger("video_builder")
 
 @dataclass
 class MediaPipeline:
+    """Compose the six dependencies required to turn audio into a local MP4.
+
+    Attributes:
+        downloader: Buffers the original audio without relying on its extension.
+        transcriber: Produces validated timestamped speech from local audio.
+        duration: Probe callable returning positive audio duration in seconds.
+        plan: Pure strategy mapping transcript, candidates and duration to a Plan.
+        resolve: Strategy replacing selected candidates with renderable local media.
+        render: Callable that finalizes and validates the output before returning.
+
+    The default composition uses still images; a different resolver can support
+    other source types without changing the queue or job lifecycle.
+    """
+
     downloader: FileDownloader
     transcriber: SpeechTranscriber
     duration: Callable[[Path], float]
@@ -32,7 +52,22 @@ class MediaPipeline:
         stop: Event,
         report: Reporter,
     ) -> None:
+        """Execute media stages and leave the finished video at workspace.output.
+
+        Args:
+            job: Snapshot containing the direct audio link.
+            workspace: Prepared per-attempt paths, including the checkpoint directory.
+            sources: Candidate source snapshot shared by the run.
+            stop: Event checked before each stage and by cooperative adapters.
+            report: Non-throwing callback for stage and render-progress state updates.
+
+        Persist transcript.json for diagnosis. Forward exceptions to JobRunner,
+        which owns failure reporting and recovery. The renderer must finish output
+        atomically and return without raising after successful finalization.
+        """
+
         def stage(name: str) -> None:
+            """Check cancellation, clear prior render progress and announce a stage."""
             check_cancel(stop)
             report(stage=name, render_progress=None)
             log.info("%s", name)
@@ -54,6 +89,10 @@ class MediaPipeline:
         last_bucket = -1
 
         def progress(value: float) -> None:
+            """Publish rounded render percentages and log newly reached ten-percent buckets.
+
+            UI updates remain frequent while disk/live logs avoid a line per FFmpeg tick.
+            """
             nonlocal last_bucket
             report(render_progress=round(value, 1))
             bucket = int(value) // 10

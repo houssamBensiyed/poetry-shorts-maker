@@ -1,3 +1,12 @@
+"""Load YAML settings and validate the assumptions used by media and providers.
+
+DEFAULTS defines the accepted sections/keys and ROOT anchors the default config
+location. Relative media and font paths resolve beside the chosen YAML file.
+Structural validation permits blank provider settings for dashboard startup;
+separate preflight checks require the selected providers before processing.
+Secrets are read from named environment variables; this module does not load .env.
+"""
+
 import copy
 import math
 import os
@@ -71,6 +80,20 @@ DEFAULTS = {
 
 
 def load_config(path=None):
+    """Merge a YAML file into isolated defaults and return validated settings.
+
+    Args:
+        path: Optional config file; defaults to config.yaml at the project root.
+
+    Treat an empty YAML document as defaults, reject unknown sections/keys, and
+    resolve configured file/directory paths relative to the YAML's directory.
+    Deep-copy defaults so repeated loads cannot mutate one another. This reads
+    configuration only; it does not create output directories or contact services.
+
+    Raises:
+        ValueError: YAML syntax, schema or setting values are invalid.
+        OSError: The configuration file cannot be read.
+    """
     path = Path(path or ROOT / "config.yaml").resolve()
     try:
         with path.open() as f:
@@ -101,6 +124,17 @@ def load_config(path=None):
 
 
 def validate_config(c):
+    """Check a complete merged configuration without requiring provider readiness.
+
+    c must have the DEFAULTS structure, normally produced by load_config.
+    Validate types, HTTPS provider endpoints, environment-variable names, numeric
+    limits, render-compatible dimensions/codecs, caption style and timeline
+    requirements. Strict integer checks reject booleans masquerading as counts.
+
+    Blank provider model/account fields and zero table IDs remain allowed so the
+    UI can open before setup. Provider preflight checks enforce them at run time.
+    Raise ValueError on invalid values; do not mutate settings or perform network I/O.
+    """
     for section, keys in [
         ("video", ["width", "height", "fps", "threads"]),
         ("footage", ["minimum_words_for_new_clip"]),
@@ -207,7 +241,12 @@ def validate_config(c):
 
 
 def check_job_config(c):
-    """Validate the providers selected by the default composition."""
+    """Require readiness of every provider in the default composition.
+
+    Run source, transcription, upload and font checks before fetching jobs. A
+    custom composition can select only relevant checks instead of requiring
+    credentials for providers it does not use. These checks make no API requests.
+    """
     check_source_config(c)
     check_transcription_config(c)
     check_upload_config(c)
@@ -215,6 +254,12 @@ def check_job_config(c):
 
 
 def check_source_config(c):
+    """Require distinct nonzero Baserow table IDs and an environment token.
+
+    The audio lifecycle table and reusable image catalog have different schemas,
+    so sharing one table is rejected. Raise ValueError for missing setup; actual
+    token permissions and table fields are verified by later adapter requests.
+    """
     if not c["baserow"]["table_id"]:
         raise ValueError("Set baserow.table_id in config.yaml before processing")
     if not c["baserow"]["images_table_id"]:
@@ -226,6 +271,11 @@ def check_source_config(c):
 
 
 def check_transcription_config(c):
+    """Require a transcription endpoint, model and environment API key.
+
+    This checks presence only; it does not verify that the configured hosted
+    provider supports the required word/segment timestamp response format.
+    """
     if not c["whisper"]["api_url"] or not c["whisper"]["model"]:
         raise ValueError("Set whisper.api_url and whisper.model for your transcription provider")
     if not os.environ.get(c["whisper"]["api_key_env"]):
@@ -235,6 +285,11 @@ def check_transcription_config(c):
 
 
 def check_upload_config(c):
+    """Require Cloudinary account name and both environment credentials.
+
+    Signed uploads use the key and secret directly; no upload preset is required.
+    Account access and limits are evaluated by the publisher's real request.
+    """
     if not c["cloudinary"]["cloud_name"]:
         raise ValueError("Set cloudinary.cloud_name in config.yaml")
     for field in ("api_key_env", "api_secret_env"):
@@ -245,5 +300,10 @@ def check_upload_config(c):
 
 
 def check_render_config(c):
+    """Require the configured font file before expensive media work starts.
+
+    This checks file presence, leaving font decoding to Pillow/libass and encoder
+    availability to the renderer. Raise ValueError when the file is missing.
+    """
     if not Path(c["captions"]["font_file"]).is_file():
         raise ValueError("Special Elite font is missing; see README font instructions")

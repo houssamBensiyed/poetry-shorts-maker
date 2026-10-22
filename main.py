@@ -1,4 +1,9 @@
-"""Launch the interactive dashboard: python main.py"""
+"""Launch the terminal dashboard without automatically running queued jobs.
+
+Configuration and logging are prepared before constructing the shared Processor.
+The dashboard provides explicit start/refresh controls; provider readiness is
+checked when work is requested. Run this entry point with python main.py.
+"""
 
 import signal
 
@@ -9,6 +14,13 @@ from app.processor import Processor
 
 
 def main():
+    """Run the dashboard and guarantee cooperative processor shutdown on exit.
+
+    Report configuration read/validation errors as a concise SystemExit. Route
+    SIGTERM through the dashboard's graceful-stop path so container shutdown can
+    request cancellation, then close/join the worker and restore the previous
+    signal handler when the terminal app exits.
+    """
     try:
         config = load_config()
     except (ValueError, OSError) as exc:
