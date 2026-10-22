@@ -13,7 +13,7 @@ Turn audio links and a table of images into vertical videos with timed captions.
 
 **Baserow → Local processing → Cloudinary → DONE**
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [Class diagrams](#class-diagrams) · [Project layout](#project-layout) · [Operations](docs/operations.md)
+[Quick start](#quick-start) · [Architecture](#architecture) · [Class diagrams](#class-diagrams) · [Project layout](#project-layout) · [Operations](docs/operations.md) · [Extension guide](docs/ARCHITECTURE.md) · [Code review](docs/CODE_REVIEW.md)
 
 </div>
 
@@ -70,7 +70,11 @@ Use editable fields, not formulas. `Status` can also be a single select with `NO
 
 ### 3. Add your credentials
 
-Copy [`.env.example`](.env.example) to `.env` and fill in the values locally:
+Copy [`.env.example`](.env.example) to `.env`, then fill in the values locally:
+
+```sh
+cp .env.example .env
+```
 
 ```dotenv
 BASEROW_API_TOKEN=your_baserow_database_token
@@ -129,54 +133,61 @@ Add at least one image link and an audio row with status `NOT_PROCESSED`, then c
 
 ```mermaid
 flowchart TD
-    Tables["Baserow<br/>Audio jobs + image links"] -->|Read lists| Worker
-    subgraph Local["Docker · Python 3.13"]
-        Controls["Terminal dashboard<br/>or HTTP API"] -->|Start / monitor| Worker
-        Worker["Processor<br/>One job at a time"]
-        Buffer["Local buffers<br/>Downloaded audio + selected images"]
-        Render["FFmpeg<br/>Images + voiceover + timed captions"]
-        Video["output/<br/>Finished MP4"]
-        Worker -->|Download from file URLs| Buffer
-        Buffer --> Render
-        Render --> Video
+    Controls["Terminal dashboard / HTTP API"] -->|Start and monitor| Coordinator
+    Tables["Baserow<br/>Audio jobs + image links"] -->|Jobs and source pool| Coordinator
+
+    subgraph Local["Local worker · Docker / Python 3.13"]
+        Coordinator["Processor<br/>Queue, lock and cancellation"] -->|Each pending job| Runner
+        Runner["JobRunner<br/>Status, upload and recovery"] -->|Produce video| Pipeline
+        Runner -->|Atomic JSON checkpoints| Work["Workspace<br/>temp/row-*/"]
+        Pipeline["MediaPipeline<br/>Download, transcribe and plan"] -->|Download sources| Buffer
+        Buffer["buffer/<br/>Original audio + selected images"] -->|Local media| Render
+        Pipeline -->|Plan + timed captions| Render
+        Render["FFmpeg renderer"] --> Video["output/<br/>Validated MP4"]
+        Video -->|Completed output path| Runner
     end
 
-    Worker -->|Send audio| ASR["Transcription API"]
-    ASR -->|Word timestamps| Worker
-    Worker -->|Image plan + captions| Render
-    Video -->|Upload| Cloud["Cloudinary"]
-    Cloud -->|Confirmed video URL| Worker
-    Worker -->|Save URL + mark DONE| Tables
+    Pipeline -->|Temporary mono FLAC| ASR["Transcription API"]
+    ASR -->|Word + segment timestamps| Pipeline
+    Runner -->|Upload MP4| Cloud["Cloudinary"]
+    Cloud -->|Confirmed video URL| Runner
+    Runner -->|PROCESSING / DONE / FAILED| Tables
 
     classDef service fill:#eff6ff,stroke:#2563eb,color:#172554
     classDef storage fill:#ecfdf5,stroke:#059669,color:#064e3b
     classDef engine fill:#f5f3ff,stroke:#7c3aed,color:#2e1065
     class Tables,ASR,Cloud service
-    class Buffer,Video storage
-    class Worker,Render engine
+    class Buffer,Video,Work storage
+    class Coordinator,Runner,Pipeline,Render engine
     style Local fill:#f8fafc,stroke:#94a3b8,color:#0f172a
 ```
 
-The diagram groups the media stages for readability. For each job, the actual order is:
+[`bootstrap.py`](app/bootstrap.py) selects the default providers and builds `ProcessingServices`. The coordinator and job workflow use interfaces so another repository, publisher or transcription provider can be selected through composition. See the [extension examples](docs/ARCHITECTURE.md#replace-the-publisher).
 
-1. Read the audio job and count the available image links.
-2. Download the audio and request its transcription.
-3. Plan image changes, randomly select images and download only those selections.
-4. Render the full video using the local audio, local images and timed captions.
-5. Upload the MP4, then save `Output URL`, `Output File` and `DONE` in Baserow.
+For each run, `Processor` takes a job snapshot and reads the image pool. For each pending job:
+
+1. `JobRunner` creates a unique workspace and marks the row `PROCESSING`.
+2. `MediaPipeline` downloads and probes the audio, then requests timestamped transcription.
+3. It plans image changes, downloads only the selected images, and renders a validated MP4.
+4. `JobRunner` records the output and intended upload ID, uploads the video, and saves the confirmed result.
+5. It marks the row `DONE`, then removes successful temporary work. Audio, selected images and the MP4 remain local.
+
+Failures retain available recovery information and trigger an independent attempt to mark the row `FAILED`. A failed diagnostic write does not prevent later jobs from running. See [recovery](docs/operations.md#recovery) before retrying an upload.
 
 ### Design choices
 
 | Concern | Implementation |
 | --- | --- |
-| Entry points | `main.py` opens the Textual dashboard; `api.py` exposes FastAPI endpoints |
-| Processing | Both entry points use `Processor`; work runs in a background thread |
-| Job tracking | Baserow rows are updated by their stable internal row ID |
-| File access | Generic HTTP(S) downloads from the links stored in Baserow |
-| Rendering | Pure timeline planning, ASS captions and local FFmpeg processing |
-| Upload completion | `DONE` is written only after Cloudinary confirms the complete upload |
+| Entry points | `main.py` opens the Textual dashboard; `api.py` exposes authenticated FastAPI endpoints |
+| Run coordination | `Processor` owns the worker thread, queue counts, cancellation and shared lock |
+| Per-job lifecycle | `JobRunner` owns status transitions, publication and recovery |
+| Media workflow | `MediaPipeline` receives a downloader, transcriber, duration probe, planner, resolver and renderer |
+| Provider selection | `bootstrap.py` wires concrete adapters to the protocols in `contracts.py` |
+| Job tracking | `JobRepository` updates jobs; the Baserow adapter uses stable internal row IDs |
+| Image catalog | `SourceCatalog` supplies sources independently of job updates |
+| Output safety | The renderer finalizes validated MP4s; `Workspace` replaces JSON checkpoints atomically |
+| Completion | `DONE` requires an acknowledged upload and repository update; cleanup follows completion |
 | Concurrency | A shared Docker volume holds the process lock and published status |
-| Recovery | Completed videos and failure checkpoints remain available locally |
 
 The shared lock coordinates containers within the same Compose project. It does not coordinate separate computers. See [running safely](docs/operations.md#running-safely).
 
@@ -187,7 +198,7 @@ These diagrams show the main application services and data models. The [architec
 <details>
 <summary><strong>Application services: dashboard, processing and integrations</strong></summary>
 
-Solid arrows indicate references, dotted arrows indicate use, diamonds indicate owned objects, and triangles indicate inheritance.
+Solid arrows indicate references, dotted arrows indicate dependencies, and filled diamonds indicate owned objects. A solid line ending in a triangle shows inheritance. A dotted line ending in a triangle shows structural protocol conformance; adapters do not need to inherit from the protocol.
 
 **Dashboard and shared runtime**
 
@@ -218,6 +229,7 @@ classDiagram
         +since(sequence)
     }
     class Processor {
+        +active
         +refresh()
         +status()
     }
@@ -241,23 +253,106 @@ classDiagram
     Processor *-- RunLock
 ```
 
-**Processing and integrations**
+**Queue, job lifecycle and media workflow**
 
-`Processor` coordinates the queue through injected services. `JobRunner` owns recovery and publication; `MediaPipeline` owns the media stages. Concrete providers are selected in `app/bootstrap.py`.
+The factories in `ProcessingServices` create repositories, catalogs and executors at run time. `JobRunner` and `MediaPipeline` satisfy the execution protocols structurally.
 
 ```mermaid
 classDiagram
-    direction LR
+    direction TB
 
     class Processor {
         +start()
         +stop()
         +close()
     }
+    class ProcessingServices {
+        +str identity
+        +repository
+        +catalog
+        +executor
+        +validate
+    }
+    class JobRepository {
+        <<protocol>>
+        +jobs()
+        +update(job, status)
+    }
+    class SourceCatalog {
+        <<protocol>>
+        +sources()
+    }
+    class JobExecutor {
+        <<protocol>>
+        +run(job, repository, sources)
+    }
+    class MediaWorkflow {
+        <<protocol>>
+        +run(job, workspace, sources, stop, report)
+    }
+    class VideoPublisher {
+        <<protocol>>
+        +public_id(path)
+        +upload(path, progress)
+    }
+    class JobRunner {
+        +run(job, repository, sources)
+    }
+    class MediaPipeline {
+        +run(job, workspace, sources, stop, report)
+    }
+    class Workspace {
+        +prepare()
+        +write(name, data)
+        +clean()
+    }
+
+    Processor --> ProcessingServices : uses factories
+    ProcessingServices ..> JobRepository : repository factory
+    ProcessingServices ..> SourceCatalog : catalog factory
+    ProcessingServices ..> JobExecutor : executor factory
+    JobExecutor <|.. JobRunner
+    MediaWorkflow <|.. MediaPipeline
+    JobRunner ..> JobRepository : receives per job
+    JobRunner --> MediaWorkflow : injected media
+    JobRunner --> VideoPublisher : injected publisher
+    JobRunner ..> Workspace : creates per job
+```
+
+**Default provider adapters**
+
+These are the default selections in [`bootstrap.py`](app/bootstrap.py), rather than dependencies constructed by `Processor`.
+
+```mermaid
+classDiagram
+    direction LR
+
+    class JobRepository {
+        <<protocol>>
+    }
+    class SourceCatalog {
+        <<protocol>>
+    }
+    class FileDownloader {
+        <<protocol>>
+    }
+    class SpeechTranscriber {
+        <<protocol>>
+    }
+    class VideoPublisher {
+        <<protocol>>
+    }
+    class Renderer {
+        <<protocol>>
+        +__call__(plan, audio, output, work, stop, progress)
+    }
     class JobTable {
         +jobs()
         +image_urls()
         +update(job, status)
+    }
+    class BaserowImageCatalog {
+        +sources()
     }
     class Downloader {
         +download(url, destination)
@@ -269,31 +364,32 @@ classDiagram
         +public_id(path)
         +upload(path, progress)
     }
-    class Cancelled {
-        <<exception>>
-    }
-    class Exception {
-        <<external>>
+    class MediaPipeline {
+        +duration
+        +plan
+        +resolve
+        +run(job, workspace, sources, stop, report)
     }
 
-    Exception <|-- Cancelled
-    Processor --> ProcessingServices : injected factories
-    ProcessingServices ..> JobTable : repository adapter
-    ProcessingServices ..> JobRunner : creates
-    JobRunner --> MediaPipeline : produces video
-    JobRunner --> Uploader : publisher adapter
-    JobRunner --> Workspace : recovery checkpoints
-    MediaPipeline --> Transcriber : speech adapter
-    MediaPipeline --> Downloader : audio adapter
-    Processor ..> Cancelled : handles
+    JobRepository <|.. JobTable
+    SourceCatalog <|.. BaserowImageCatalog
+    BaserowImageCatalog --> JobTable : reads image URLs
+    FileDownloader <|.. Downloader
+    SpeechTranscriber <|.. Transcriber
+    VideoPublisher <|.. Uploader
+    MediaPipeline --> FileDownloader : audio downloader
+    MediaPipeline --> SpeechTranscriber : transcription
+    MediaPipeline --> Renderer : rendering callable
 ```
+
+The pipeline's duration probe, planner and source resolver are injected functions. The default resolver buffers selected images; the rendering callable wraps `video_builder.render`. `Reporter` callbacks publish stage/progress updates. Shared `Cancelled` exceptions and `check_cancel()` live in `cancellation.py`; FFmpeg subprocess execution lives in `ffmpeg.py`.
 
 </details>
 
 <details>
 <summary><strong>Data models: jobs, words, images and the video timeline</strong></summary>
 
-These are frozen dataclasses. `JobTable` produces `Job` records, `Transcriber` returns a `Transcript`, and `build_plan()` returns a `Plan` for rendering. A hollow diamond groups shared objects; a filled diamond indicates composition.
+The domain records below are frozen dataclasses. `Job` and `Transcript` live in `models.py`; the timeline records live in `timeline.py`. `JobTable` produces `Job` records, `Transcriber` returns a `Transcript`, and `build_plan()` returns a `Plan` for rendering. A hollow diamond groups shared objects; a filled diamond indicates composition.
 
 ```mermaid
 classDiagram
@@ -350,31 +446,44 @@ classDiagram
     Caption --> Sentence : text and timing
 ```
 
+`UploadResult` in `models.py` is a typed dictionary containing `url`, `public_id` and `bytes`; publishers return it after confirming completion. `Workspace` in `artifacts.py` is a frozen dataclass holding work, output, audio and image paths.
+
 `Source` and the rendering helpers also support video sources internally. The application workflow supplies only images from Baserow; there is no local footage input folder.
 
 </details>
 
-### Modules without application classes
+### Code map
 
 | Module | Responsibility |
 | --- | --- |
-| [`config.py`](app/config.py) | Load YAML, resolve paths and validate required settings |
-| [`images.py`](app/images.py) | Download selected images, verify decoding and return local sources |
-| [`footage.py`](app/footage.py) | Inspect media with FFprobe and measure audio duration |
-| [`captions.py`](app/captions.py) | Lay out words and write timed ASS subtitles |
-
-[`timeline.py`](app/timeline.py) also groups words into sentences and builds the plan. [`video_builder.py`](app/video_builder.py) renders videos; [`ffmpeg.py`](app/ffmpeg.py) runs subprocesses and [`cancellation.py`](app/cancellation.py) defines shared cancellation.
+| [`processor.py`](app/processor.py) | Run ownership, thread lifecycle, queue iteration and observable state |
+| [`execution.py`](app/execution.py) | One job's status, upload and recovery policy; `MediaWorkflow` contract |
+| [`pipeline.py`](app/pipeline.py) | Media stages from download through rendering |
+| [`bootstrap.py`](app/bootstrap.py) | Default providers, media strategies and service factories |
+| [`contracts.py`](app/contracts.py) | Structural protocols and the `ProcessingServices` factory bundle |
+| [`models.py`](app/models.py) / [`timeline.py`](app/timeline.py) | Shared values, sentence grouping and timeline validation |
+| [`artifacts.py`](app/artifacts.py) / [`state.py`](app/state.py) | Per-job checkpoints, process locking and state snapshots |
+| [`jobs.py`](app/jobs.py) / [`uploads.py`](app/uploads.py) / [`transcription.py`](app/transcription.py) | Baserow, Cloudinary and hosted transcription adapters |
+| [`downloads.py`](app/downloads.py) / [`images.py`](app/images.py) | Direct downloads and selected-image decoding/validation |
+| [`footage.py`](app/footage.py) / [`captions.py`](app/captions.py) / [`video_builder.py`](app/video_builder.py) | Media probing, ASS captions and validated FFmpeg renders |
+| [`cancellation.py`](app/cancellation.py) / [`ffmpeg.py`](app/ffmpeg.py) | Cooperative cancellation and cancellable subprocess execution |
+| [`config.py`](app/config.py) | YAML validation and separately composable provider checks |
 
 ## Project layout
 
 ```text
 poetry-shorts-maker/
-├── app/                    Application classes and processing functions
+├── .github/workflows/ci.yml Lint, formatting, type checks and tests
+├── app/                    Application services, protocols and provider adapters
 ├── assets/fonts/           Bundled Special Elite font and license
 ├── buffer/
 │   ├── voiceovers/         Downloaded original audio
 │   └── images/             Selected images downloaded for each job
-├── docs/                   Operations guide and README badge assets
+├── docs/
+│   ├── ARCHITECTURE.md      Extension guide, dependency diagram and job sequence
+│   ├── CODE_REVIEW.md       Findings, fixes and remaining limitations
+│   ├── operations.md       Configuration, HTTP API and recovery
+│   └── assets/             README badges
 ├── logs/                   Rotating application logs
 ├── output/                 Completed MP4 files
 ├── temp/                   Job work files and recovery checkpoints
@@ -385,8 +494,10 @@ poetry-shorts-maker/
 ├── .env.example            Credential template
 ├── Dockerfile              Python 3.13 and FFmpeg runtime
 ├── compose.yaml            Dashboard, API and persistent storage
-├── requirements.txt        Dependency constraints
-└── requirements.lock       Pinned Python dependencies
+├── pyproject.toml          Pytest, Ruff and core mypy configuration
+├── requirements-dev.txt    Pinned development tools and runtime dependencies
+├── requirements.txt        Runtime dependency constraints
+└── requirements.lock       Pinned runtime dependencies
 ```
 
 The buffers, output, logs and temporary files live on your computer through Docker mounts. Successful jobs clear their temporary work files; downloaded media and completed videos remain. The `footage` YAML section controls image timing and random selection, not a folder.
@@ -419,9 +530,21 @@ Coverage includes real local HTTP downloads, FFmpeg renders and caption-frame ch
 
 Live service processing still requires your table IDs, credentials and a verified transcription endpoint and model. The test results do not claim a successful live upload or paid transcription request.
 
-
 ## Architecture and contributing
 
 Start with the [architecture and extension guide](docs/ARCHITECTURE.md) before adding a provider or media stage. Run coordination, media processing, job recovery and provider wiring have separate modules; `ProcessingServices` and the protocols in `app/contracts.py` provide explicit extension points.
 
 The [critical code review](docs/CODE_REVIEW.md) records the findings addressed by the refactor and remaining limitations. Development checks and pinned tools are documented in the architecture guide; CI is configured to run linting, formatting, core type checks and tests on Python 3.13 and 3.14.
+
+For native development with Python 3.13 or 3.14 and FFmpeg/FFprobe installed:
+
+```sh
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/ruff check app tests api.py main.py
+.venv/bin/ruff format --check app tests api.py main.py
+.venv/bin/mypy
+.venv/bin/python -m pytest -q
+```
+
+On Windows use the corresponding `.venv/Scripts` executables. Mypy currently checks eight core modules; the existing provider adapters and YAML dictionaries are not fully typed. To launch natively, export the credentials in your shell and run `.venv/bin/python main.py`; the application itself does not load `.env`.

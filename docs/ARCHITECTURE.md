@@ -1,24 +1,29 @@
 # Architecture and extension guide
 
+[README](../README.md) · [Operations](operations.md) · [Critical code review](CODE_REVIEW.md)
+
 The application runs one sequential batch at a time. The dashboard and API use the same `Processor`. Configuration remains compatible with the existing YAML, and default behavior remains Baserow → hosted transcription → local FFmpeg → Cloudinary.
 
 ## Responsibility boundaries
 
 ```mermaid
 flowchart TD
-    UI[Dashboard / HTTP API] --> Processor
-    Bootstrap[bootstrap.py: provider wiring] --> Services[ProcessingServices]
-    Processor --> Services
-    Services --> Repository[JobRepository]
-    Services --> Catalog[SourceCatalog]
-    Services --> Runner[JobRunner]
-    Runner --> Media[MediaWorkflow / MediaPipeline]
-    Runner --> Publisher[VideoPublisher]
-    Runner --> Workspace[Workspace: files and checkpoints]
-    Media --> Download[FileDownloader]
-    Media --> Transcribe[SpeechTranscriber]
-    Media --> Plan[Planner and source resolver]
-    Media --> Render[Renderer]
+    UI["Dashboard / HTTP API"] --> Processor
+    Bootstrap["bootstrap.py<br/>build_services + build_media_pipeline"] -.->|Constructs and configures| Services
+    Processor --> Services["ProcessingServices<br/>identity + factories + validator"]
+    Services -.->|repository factory| Repository["JobRepository"]
+    Services -.->|catalog factory| Catalog["SourceCatalog"]
+    Services -.->|executor factory| Executor["JobExecutor / JobRunner"]
+    Executor -->|Injected workflow| Media["MediaWorkflow / MediaPipeline"]
+    Executor -->|Injected publisher| Publisher["VideoPublisher"]
+    Executor -->|Per-job workspace factory| Workspace["Workspace<br/>paths + atomic checkpoints"]
+    Executor -->|Status transitions| Repository
+    Media --> Download["FileDownloader"]
+    Media --> Transcribe["SpeechTranscriber"]
+    Media --> Strategies["Duration probe + planner + source resolver"]
+    Media --> Render["Renderer callable"]
+    Media -.->|Stage and render progress| Reporter["Reporter / Processor.update"]
+    Executor -.->|Upload stage and errors| Reporter
 ```
 
 | Module | Responsibility | What to change here |
@@ -36,6 +41,44 @@ flowchart TD
 `Processor(config)` remains supported and selects the default composition. `Processor(config, services)` accepts an explicit `ProcessingServices`. The default constructor imports the composition root lazily; injected application tests do not construct default providers.
 
 The `identity` in `ProcessingServices` defines the shared lock namespace. It must be stable across processes using the same job queue. Baserow defaults to server URL plus audio-table ID. Do not use random identities in production; tests use them for isolation.
+
+## Successful job sequence
+
+This sequence shows the default composition after the coordinator has read the job snapshot and source pool. Providers satisfy protocols structurally; they are created by factories rather than directly by the coordinator.
+
+```mermaid
+sequenceDiagram
+    participant Processor
+    participant Runner as JobRunner
+    participant Repo as JobRepository
+    participant Work as Workspace
+    participant Media as MediaWorkflow
+    participant Publisher as VideoPublisher
+
+    Processor->>Runner: run(job, repository, sources)
+    Runner->>Work: prepare unique workspace
+    Runner->>Repo: update(job, PROCESSING)
+    Repo-->>Runner: acknowledged
+    Runner->>Media: run(job, workspace, sources, stop, report)
+    Note over Media,Work: Download and probe audio; transcribe and save transcript.json
+    Note over Media,Work: Plan, buffer selected images and render validated MP4
+    Media-->>Runner: media workflow finished
+    Runner->>Work: write rendered.json
+    Runner->>Publisher: public_id(output)
+    Publisher-->>Runner: intended remote identifier
+    Runner->>Work: write upload.json
+    Runner->>Publisher: upload(output, progress)
+    Publisher-->>Runner: confirmed UploadResult
+    Runner->>Work: write uploaded.json
+    Note over Runner,Repo: A Stop received with the final upload response does not cancel the DONE update
+    Runner->>Repo: update(job, DONE, output, uploaded_url)
+    Repo-->>Runner: acknowledged
+    Runner->>Work: clean temporary workspace
+    Runner-->>Processor: True
+    Note over Processor: Increment completed count; continue unless stopped
+```
+
+On a per-job exception, `JobRunner` independently attempts `failure.json` and, if `PROCESSING` was acknowledged, a `FAILED` update. It returns `False` so the coordinator can count the failure and continue. A cancellation sets the shared event, which prevents the next job from starting. Failure to remove successful temporary work is logged and still returns success. Full recovery rules appear [below](#recovery-and-cancellation-contracts).
 
 ## SOLID choices
 
@@ -119,7 +162,7 @@ Use `dataclasses.replace(build_media_pipeline(config, stop), transcriber=...)` t
 
 `Reporter` callbacks must accept keyword state updates and must not throw. The built-in reporter isolates shared-status filesystem errors. `MediaWorkflow` and renderer implementations must not raise after successfully finalizing output: the runner treats a raised media exception as incomplete work. `JobExecutor.run` returns success only for acknowledged completion and handles expected per-job failures itself; an unexpected executor exception terminates the batch visibly.
 
-Atomic JSON replacement prevents partially written documents from being observed. It does not provide power-loss durability or an atomic transaction with either external service. See the review and README recovery instructions before adding automatic retries.
+Atomic JSON replacement prevents partially written documents from being observed. It does not provide power-loss durability or an atomic transaction with either external service. See the [review](CODE_REVIEW.md#remaining-limitations-and-decisions) and [operations recovery instructions](operations.md#recovery) before adding automatic retries.
 
 ## Development checks
 

@@ -1,6 +1,6 @@
 # Operations guide
 
-[Back to the README](../README.md)
+[README](../README.md) · [Architecture and extensions](ARCHITECTURE.md) · [Critical code review](CODE_REVIEW.md)
 
 [File links](#file-links-and-buffers) · [Transcription](#transcription-provider) · [Configuration](#configuration) · [HTTP API](#http-api) · [Recovery](#recovery) · [Troubleshooting](#troubleshooting)
 
@@ -42,7 +42,7 @@ The provider must accept Bearer-authenticated multipart requests with:
 
 For speech, the response must include `text`, `words` with word/start/end fields, and `segments` with text/start/end fields. The app validates timestamp order and alignment, and restores punctuation from the transcript text. Missing or inconsistent timestamps fail the job rather than being fabricated.
 
-The temporary FLAC upload is limited to 24 MB and removed after the request finishes. The original buffered audio supplies the final video's audio track. Your provider may impose a smaller limit and may charge for retries.
+The temporary FLAC upload is limited to 24 MB and removed on completion, failure or cancellation, including cancellation during audio preparation. The original buffered audio supplies the final video's audio track. Your provider may impose a smaller limit and may charge for retries.
 
 ## Configuration
 
@@ -162,6 +162,10 @@ If `uploaded.json` exists, copy the URL into `Output URL`, the output path into 
 
 If the final upload request timed out, inspect Cloudinary for the public ID in `upload.json` before retrying. The remote video may already exist. Cloudinary uploads and Baserow updates are separate operations, so a lost response does not prove the upload failed.
 
+Checkpoint JSON files are replaced atomically so readers do not observe partially written documents. A disk or permission failure can still prevent a checkpoint from being saved. The runner attempts diagnostics and remote failure updates independently; check the row error and logs if a checkpoint is absent. A complete MP4 is retained after rendering even if a later checkpoint fails. If `uploaded.json` could not be saved, a known uploaded URL may still appear in `failure.json` or the failed row.
+
+After Baserow acknowledges `DONE`, failure to remove the temporary work directory is logged without changing the job back to `FAILED`. Shared-status publication failures are also logged without changing the job outcome.
+
 ## Troubleshooting
 
 | Symptom | What to check |
@@ -188,9 +192,9 @@ The bundle is used only during dependency installation and is not copied into th
 
 ## Native development
 
-Docker is the preferred runtime. Native development requires Python 3.13, FFmpeg/FFprobe with libass/H.264 support and a virtual environment.
+Docker is the preferred runtime and uses Python 3.13. Native development supports Python 3.13 or 3.14 with FFmpeg/FFprobe, libass/H.264 support and a virtual environment.
 
-Install `requirements.lock`, export the required environment variables, then run `python main.py` or `python api.py`. The application does not load `.env` automatically. Keep native processing separate from Docker processing against the same Baserow table.
+Install `requirements-dev.txt` for the pinned runtime and development tools, or `requirements.lock` for runtime dependencies alone. Export the required environment variables, then run `python main.py` or `python api.py` from the environment. See [development checks](ARCHITECTURE.md#development-checks) for lint, formatting, type checks and tests. The application does not load `.env` automatically. Keep native processing separate from Docker processing against the same Baserow table.
 
 ## Validation scope
 
