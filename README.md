@@ -182,7 +182,7 @@ The shared lock coordinates containers within the same Compose project. It does 
 
 ## Class diagrams
 
-These diagrams cover all **19 classes defined in `app/`**, split into services and data models. Only selected public methods are shown. Classes marked `external` belong to Python or Textual.
+These diagrams show the main application services and data models. The [architecture and extension guide](docs/ARCHITECTURE.md) describes the complete set of interfaces and extension points. Only selected public methods are shown. Classes marked `external` belong to Python or Textual.
 
 <details>
 <summary><strong>Application services: dashboard, processing and integrations</strong></summary>
@@ -243,7 +243,7 @@ classDiagram
 
 **Processing and integrations**
 
-`Processor` is repeated here to show its integration dependencies separately from the dashboard.
+`Processor` coordinates the queue through injected services. `JobRunner` owns recovery and publication; `MediaPipeline` owns the media stages. Concrete providers are selected in `app/bootstrap.py`.
 
 ```mermaid
 classDiagram
@@ -277,10 +277,14 @@ classDiagram
     }
 
     Exception <|-- Cancelled
-    Processor *-- Transcriber
-    Processor ..> JobTable : reads and updates
-    Processor ..> Downloader : downloads
-    Processor ..> Uploader : uploads
+    Processor --> ProcessingServices : injected factories
+    ProcessingServices ..> JobTable : repository adapter
+    ProcessingServices ..> JobRunner : creates
+    JobRunner --> MediaPipeline : produces video
+    JobRunner --> Uploader : publisher adapter
+    JobRunner --> Workspace : recovery checkpoints
+    MediaPipeline --> Transcriber : speech adapter
+    MediaPipeline --> Downloader : audio adapter
     Processor ..> Cancelled : handles
 ```
 
@@ -359,7 +363,7 @@ classDiagram
 | [`footage.py`](app/footage.py) | Inspect media with FFprobe and measure audio duration |
 | [`captions.py`](app/captions.py) | Lay out words and write timed ASS subtitles |
 
-[`timeline.py`](app/timeline.py) also groups words into sentences and builds the plan. [`video_builder.py`](app/video_builder.py) defines `Cancelled` plus the FFmpeg rendering functions.
+[`timeline.py`](app/timeline.py) also groups words into sentences and builds the plan. [`video_builder.py`](app/video_builder.py) renders videos; [`ffmpeg.py`](app/ffmpeg.py) runs subprocesses and [`cancellation.py`](app/cancellation.py) defines shared cancellation.
 
 ## Project layout
 
@@ -405,7 +409,7 @@ For API commands, tuning, supported file links and recovery, see the **[operatio
 
 ## Validation
 
-The Python 3.13 Docker build and **67 application tests** passed during the latest code validation. Run the suite with:
+The maintenance refactor passed **117 tests** locally on Python 3.14, plus lint, formatting and core type checks. The Docker runtime uses Python 3.13. See [the code review](docs/CODE_REVIEW.md) for verification scope and remaining limitations. Run the suite with:
 
 ```sh
 docker compose run --rm --no-deps dashboard python -m pytest -q
@@ -414,3 +418,10 @@ docker compose run --rm --no-deps dashboard python -m pytest -q
 Coverage includes real local HTTP downloads, FFmpeg renders and caption-frame checks, random image selection, API authentication, cancellation, upload signatures and failure recovery. External Baserow, transcription and Cloudinary responses are mocked in tests.
 
 Live service processing still requires your table IDs, credentials and a verified transcription endpoint and model. The test results do not claim a successful live upload or paid transcription request.
+
+
+## Architecture and contributing
+
+Start with the [architecture and extension guide](docs/ARCHITECTURE.md) before adding a provider or media stage. Run coordination, media processing, job recovery and provider wiring have separate modules; `ProcessingServices` and the protocols in `app/contracts.py` provide explicit extension points.
+
+The [critical code review](docs/CODE_REVIEW.md) records the findings addressed by the refactor and remaining limitations. Development checks and pinned tools are documented in the architecture guide; CI is configured to run linting, formatting, core type checks and tests on Python 3.13 and 3.14.
