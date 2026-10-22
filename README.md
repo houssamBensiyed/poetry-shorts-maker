@@ -100,12 +100,12 @@ cloudinary:
   cloud_name: "YOUR_CLOUD_NAME"
 
 whisper:
-  api_url: "https://YOUR_PROVIDER_HOST/v1/audio/transcriptions"
-  model: "YOUR_PROVIDER_MODEL"
+  api_url: "https://api.groq.com/openai/v1/audio/transcriptions"
+  model: "whisper-large-v3"
 ```
 
 > [!IMPORTANT]
-> Naga is the selected transcription provider, but its endpoint, model and timestamp support still need verification. The supplied values are intentionally blank. The provider must return word and segment timestamps. See the [transcription requirements](docs/operations.md#transcription-provider).
+> Groq is the selected transcription provider. Set `WHISPER_API_KEY` to your Groq key. The app requests both word and segment timestamps and caps small end overruns at the audio duration. See the [transcription requirements](docs/operations.md#transcription-provider).
 
 Cloudinary needs a cloud name, API key and API secret. The app uses signed uploads and saves **public HTTPS video URLs**. No upload preset is needed.
 

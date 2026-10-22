@@ -14,8 +14,8 @@ cloudinary:
   chunk_mb: 10
   timeout_seconds: 120
 whisper:
-  model: ""  # Your provider's transcription model
-  api_url: ""  # Full HTTPS transcription endpoint
+  model: "whisper-large-v3"
+  api_url: "https://api.groq.com/openai/v1/audio/transcriptions"
   api_key_env: WHISPER_API_KEY
   language: null
   word_timestamps: true
