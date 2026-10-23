@@ -29,11 +29,13 @@ video:
   preset: medium
   threads: 2
 footage:
+  mode: image  # image, video or hybrid (hybrid always starts with video)
   minimum_words_for_new_clip: 3
   avoid_immediate_repetition: true
   random_seed: null
 composition:
   images_directory: assets/images
+  videos_directory: assets/videos
   music_directory: assets/music
   overlay_file: assets/overlays/Authentic vintage film grain overlay nostalgic to any project, creating retro cinematic effects.mp4
 captions:

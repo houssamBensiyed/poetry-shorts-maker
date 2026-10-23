@@ -52,12 +52,14 @@ DEFAULTS = {
         "threads": 2,
     },
     "footage": {
+        "mode": "image",
         "minimum_words_for_new_clip": 3,
         "avoid_immediate_repetition": True,
         "random_seed": None,
     },
     "composition": {
         "images_directory": "assets/images",
+        "videos_directory": "assets/videos",
         "music_directory": "assets/music",
         "overlay_file": "assets/overlays/Authentic vintage film grain overlay nostalgic to any project, creating retro cinematic effects.mp4",
     },
@@ -118,7 +120,10 @@ def load_config(path=None):
         config[section].update(values)
     for section, keys in [
         ("captions", ["font_file"]),
-        ("composition", ["images_directory", "music_directory", "overlay_file"]),
+        (
+            "composition",
+            ["images_directory", "videos_directory", "music_directory", "overlay_file"],
+        ),
         ("paths", ["output", "temp", "logs", "buffer"]),
     ]:
         for key in keys:
@@ -141,6 +146,8 @@ def validate_config(c):
     UI can open before setup. Provider preflight checks enforce them at run time.
     Raise ValueError on invalid values; do not mutate settings or perform network I/O.
     """
+    if c["footage"]["mode"] not in ("image", "video", "hybrid"):
+        raise ValueError("footage.mode must be image, video or hybrid")
     for section, keys in [
         ("video", ["width", "height", "fps", "threads"]),
         ("footage", ["minimum_words_for_new_clip"]),

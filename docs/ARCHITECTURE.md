@@ -9,6 +9,7 @@ publication are independent optional adapters.
 | --- | --- |
 | `VoiceBuffer` in `app/buffer.py` | Strict numbering, atomic enqueue, source metadata and completion outbox |
 | `LocalImages` in `app/images.py` | Read shared assets from `composition.images_directory` (default `assets/images`) |
+| `LocalFootage` in `app/footage.py` | Load image/video pools for the chosen mode and probe video durations |
 | `Processor` | Sequential scheduling, cancellation, shared lock and observable counts |
 | `Dashboard` | Explicit local/Baserow source selection and empty-buffer feedback |
 | `BufferRunner` | Render one buffered voice; save event and consume source on success |
@@ -51,8 +52,9 @@ empty no-ops for polling.
    lock serializes allocation; a persistent high-water mark prevents ID reuse.
    Incomplete copies are hidden and never become queued inputs.
 2. Processor snapshots numbered voices in numeric order, under its run lock.
-3. Shared image assets are snapshotted once from `composition.images_directory`. The timeline planner selects
-   random images at eligible sentence boundaries; it never queries a sheet.
+3. `LocalFootage` snapshots the selected shared asset pools. Video candidates are
+   probed for a real video stream and positive finite duration. The timeline planner
+   selects random footage at eligible sentence boundaries; it never queries a sheet.
 4. `run_local` operates on the existing voice path and creates a validated MP4
    with the same voice ID. It never downloads the voice or publishes the result.
 5. BufferRunner saves a `rendered` receipt, removes that voice, and marks the
@@ -66,6 +68,26 @@ The queue's metadata lock and the scheduling lock serve different purposes;
 enqueue can run while an existing snapshot renders.
 
 ## Render composition
+
+`footage.mode` defaults to `image`; `video` uses `composition.videos_directory`,
+and `hybrid` combines that pool with `composition.images_directory`. The console
+selector, `/run?mode=...` and buffer CLI `--mode` pass a per-run override to
+`Processor.start`. It builds a private service configuration without changing the
+default config or an active run. Custom injected services retain their own policy
+and reject mode overrides. The run status reports the selected mode.
+
+The planner retains the existing minimum-word cut rule in all modes. Hybrid
+requires both media types and restricts the opening selection to videos, even
+when speech starts later or there are no qualifying cuts. Later selections draw
+randomly from the combined pool; a one-section hybrid reel contains only its
+opening video. Video offsets are randomized within available duration, short
+clips loop, and clip audio is discarded. Videos keep their natural motion and
+brightness; the 80% brightness and shake effects apply to still images.
+
+Dev-tool sessions accept videos alongside images and audio, validate each upload,
+and freeze all three while rendering. Their mode is passed to the same planner.
+All uploads remain under the session's temporary directory; project assets are
+not modified. The composition report records `footage_mode`.
 
 `video_builder.render()` is shared by the buffer worker and the dev tool. It picks
 one music track per reel from `composition.music_directory`, using the footage

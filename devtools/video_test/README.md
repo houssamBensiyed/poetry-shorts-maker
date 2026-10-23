@@ -14,8 +14,11 @@ Open **http://127.0.0.1:8765**. Use `--port 8766` if that port is busy.
 No Node build, new runtime dependency, Baserow or Cloudinary setup is needed.
 The launcher only listens on your own computer.
 
-1. Upload 3–10 JPG, PNG or WebP images. Each is decoded, its EXIF orientation is
-   applied, and it is saved as PNG in the temporary session directory.
+1. Choose **Images**, **Videos**, or **Hybrid**. Image mode needs 3–10 images;
+   video mode needs 1–10 videos; hybrid needs at least one of each and starts with
+   a video. Upload JPG/PNG/WebP images and MP4/MOV/MKV/WebM/M4V/AVI videos for your
+   selected mode. Images are decoded, orientation-corrected and saved as PNG;
+   clips are probed and saved unchanged in the temporary session directory.
 2. Upload one voice recording. It is saved unchanged in the temporary session and
    checked with the project's FFprobe helper. You can listen to it in the UI.
 3. Choose fast preview or the full video size from `config.yaml`.
@@ -34,7 +37,9 @@ Its 2.4/3.2-second cycles increase shake speed while
 keeping image movement small. No extra uploads are required. Music and overlay
 paths come from `composition` in `config.yaml`; missing assets block the test
 before transcription. Overlay audio is excluded and captions are applied after
-blending. The selection seed reproduces both image planning and music choice.
+blending. Clip audio is also excluded; videos keep their natural motion and
+brightness. Short clips loop to fill their section. The selection seed reproduces
+footage choices, video offsets and the music choice.
 The downloadable run report records the chosen assets and composition settings.
 
 Every run uses the project's `Transcriber` and the `whisper` settings in
@@ -46,12 +51,14 @@ Restart the server after changing credentials or configuration. The UI shows mis
 settings and prevents a run until the API is configured.
 
 The uploaded voice is sent to the configured Whisper service. Its returned words
-and timestamps control the captions and image changes. A transcription error fails
+and timestamps control the captions and footage changes. A transcription error fails
 the test before rendering; no sample text or estimated timing is substituted.
 The transcript is saved as `transcript.json` in the run's temporary folder.
-With the default configuration, sentences of at least three words trigger image
-changes. The core planner selects from the test session’s images, so a run may not use every
-image. The seed makes that selection repeatable.
+With the default configuration, sentences of at least three words trigger footage
+changes. The planner uses the session's selected media types and avoids immediate
+repeats when another candidate exists. Hybrid starts with video and randomly picks
+from both pools afterward; a one-section reel remains video-only. A run may not
+use every uploaded file. The seed makes selection repeatable.
 
 The UI calls `Transcriber.transcribe()`, `sentences_from_words()`, `build_plan()` and
 `app.video_builder.render()` directly. It checks the same timeline, caption,
@@ -61,16 +68,18 @@ and repository status updates are outside its scope. It does not write to
 `config.yaml`.
 
 Uploads are limited to 20 MB per image (40 million pixels) and 100 MB / 10 minutes
-per voice recording. A session supports one voice recording and up to ten images.
+per voice recording, and 256 MB / 10 minutes per video. A session supports one voice
+recording, up to ten images and up to ten videos.
 Only one test runs at a time across browser sessions. Uploads and removals are
 blocked while that session is rendering. **Stop test** requests cancellation of
 FFmpeg; the UI waits for the worker to finish before allowing edits.
 
 All uploads, generated videos and diagnostics use unique session/run folders under
-`paths.temp` (normally `temp/`). The production voice buffer, shared image assets and output are not changed:
+`paths.temp` (normally `temp/`). The production voice buffer, shared image/video assets and output are not changed:
 
 ```text
 temp/ui-test/<session>/images/               Decoded test images
+temp/ui-test/<session>/videos/               Uploaded test clips
 temp/ui-test/<session>/voiceovers/           Uploaded test voice
 temp/ui-test/<session>/runs/<run>/video.mp4   Test video
 temp/ui-test/<session>/runs/<run>/            Transcript, plan, captions, logs, report

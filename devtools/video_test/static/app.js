@@ -5,6 +5,7 @@ let info = null;
 let busy = false;
 let connected = false;
 let imageKey = "";
+let sourceVideoKey = "";
 let audioKey = "";
 let eventKey = "";
 let videoKey = "";
@@ -94,12 +95,20 @@ async function api(path, options = {}) {
   return result;
 }
 function updateChecks() {
-  const imagesReady = session.images.length >= 3 && session.images.length <= 10;
+  const mode = $("mode").value;
+  const imagesReady = mode === "video" || session.images.length >= (mode === "hybrid" ? 1 : 3);
+  const videosReady = mode === "image" || session.videos.length >= 1;
+  const footageReady = imagesReady && videosReady;
+  const requirement = mode === "image" ? "3–10 images" : mode === "video" ? "1–10 videos" : "at least one image and one video";
+  $("images-card").hidden = mode === "video";
+  $("videos-card").hidden = mode === "image";
+  $("image-requirement").textContent = mode === "hybrid" ? "1–10 images required" : "3–10 images required";
+  $("check-footage-text").textContent = `Add ${requirement} to this test session`;
   const audioReady = Boolean(session.audio);
   const toolsReady = info?.ffmpeg && info?.font && info?.assets;
   for (const [id, ready] of [
-    ["check-images", imagesReady],
-    ["step-images", imagesReady],
+    ["check-images", footageReady],
+    ["step-images", footageReady],
     ["check-audio", audioReady],
     ["step-audio", audioReady],
     ["check-tools", toolsReady],
@@ -110,9 +119,10 @@ function updateChecks() {
   }
   const locked = Boolean(busy || active() || session.uploading);
   document.body.classList.toggle("busy", locked);
-  for (const id of ["image-drop", "audio-drop", "remove-audio", "size", "seed"])
+  for (const id of ["image-drop", "video-drop", "audio-drop", "remove-audio", "mode", "size", "seed"])
     $(id).disabled = locked;
   $("image-drop").disabled = locked || session.images.length >= 10;
+  $("video-drop").disabled = locked || session.videos.length >= 10;
   document
     .querySelectorAll(".remove-image")
     .forEach((button) => (button.disabled = locked));
@@ -120,7 +130,7 @@ function updateChecks() {
   $("run").disabled =
     locked ||
     !connected ||
-    !imagesReady ||
+    !footageReady ||
     !audioReady ||
     !toolsReady ||
     !info?.speech ||
@@ -141,15 +151,34 @@ function updateChecks() {
         ? "Reconnect to the test server to continue."
         : !toolsReady
           ? info?.assets_error || "FFmpeg and the caption font are required."
-          : !imagesReady || !audioReady
-            ? "Add 3–10 images and a voice recording."
+          : !footageReady || !audioReady
+            ? `Add ${requirement} and a voice recording.`
             : !info?.speech
               ? "Set up the Whisper API before running a test."
               : !validSeed
-                ? "Enter a valid image selection seed."
+                ? "Enter a valid footage selection seed."
                 : "Everything is ready. Start your test.";
 }
 function renderMedia() {
+  $("source-video-count").textContent = `${session.videos.length} / 10`;
+  const nextSourceVideoKey = session.videos.map((item) => item.id).join(",");
+  if (nextSourceVideoKey !== sourceVideoKey) {
+    sourceVideoKey = nextSourceVideoKey;
+    $("source-video-grid").replaceChildren(...session.videos.map((item) => {
+      const wrapper = node("div", "image-item");
+      const video = node("video", "source-video");
+      video.src = `${base()}/media/${item.id}`;
+      video.controls = true;
+      video.muted = true;
+      video.preload = "metadata";
+      const remove = node("button", "text-link remove-image", "Remove");
+      remove.type = "button";
+      remove.setAttribute("aria-label", `Remove ${item.name}`);
+      remove.addEventListener("click", () => removeMedia(item.id));
+      wrapper.append(video, node("div", "image-name", item.name), remove);
+      return wrapper;
+    }));
+  }
   $("image-count").textContent = `${session.images.length} / 10`;
   $("image-status").textContent = session.images.length
     ? `${session.images.length} saved to temporary storage`
@@ -357,7 +386,9 @@ async function upload(files, kind) {
     );
   if (kind === "audio" && files.length !== 1)
     return showError(new Error("Choose one voice recording."));
-  const limit = kind === "image" ? 20 : 100;
+  if (kind === "video" && session.videos.length + files.length > 10)
+    return showError(new Error("Choose no more than 10 videos in total."));
+  const limit = kind === "image" ? 20 : kind === "video" ? 256 : 100;
   if (files.some((file) => file.size > limit * 1024 * 1024))
     return showError(new Error(`Each file must be smaller than ${limit} MB.`));
   busy = true;
@@ -396,7 +427,7 @@ async function upload(files, kind) {
     render();
   }
 }
-for (const kind of ["image", "audio"]) {
+for (const kind of ["image", "video", "audio"]) {
   const input = $(`${kind}-input`);
   const drop = $(`${kind}-drop`);
   drop.addEventListener("click", () => input.click());
@@ -425,7 +456,7 @@ $("remove-audio").addEventListener(
   "click",
   () => session.audio && removeMedia(session.audio.id),
 );
-for (const id of ["size", "seed"]) $(id).addEventListener("input", render);
+for (const id of ["mode", "size", "seed"]) $(id).addEventListener("input", render);
 $("run").addEventListener("click", async () => {
   if ($("run").disabled) return;
   busy = true;
@@ -437,6 +468,7 @@ $("run").addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         size: $("size").value,
+        mode: $("mode").value,
         seed: Number($("seed").value),
       }),
     });
@@ -489,7 +521,9 @@ async function poll() {
     if (error.status === 404) {
       session = null;
       imageKey = audioKey = eventKey = videoKey = "";
+      sourceVideoKey = "";
       $("image-grid").replaceChildren();
+      $("source-video-grid").replaceChildren();
       for (const id of ["audio-player", "video-player"]) {
         $(id).pause();
         $(id).removeAttribute("src");

@@ -10,6 +10,7 @@ import asyncio
 import hmac
 import os
 from contextlib import asynccontextmanager
+from typing import Literal
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -63,14 +64,14 @@ def create_app(config=None, processor=None):
             raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
 
     @app.get("/run", dependencies=[Depends(authenticate)])
-    def run():
+    def run(mode: Literal["image", "video", "hybrid"] | None = None):
         """Request a manual run and return an uncached acknowledgement.
 
         HTTP 202 means a worker was started, not that jobs finished successfully.
         A refused start returns already_running; clients use /status to monitor work.
         Because this GET has a side effect, it is intended for explicit API triggers.
         """
-        if not processor.start():
+        if not (processor.start() if mode is None else processor.start(mode=mode)):
             return JSONResponse(
                 {"status": "already_running"}, headers={"Cache-Control": "no-store"}
             )

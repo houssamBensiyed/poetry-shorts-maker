@@ -105,6 +105,7 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
         json.dumps(
             {
                 "music": str(music.resolve()),
+                "footage_mode": config["footage"]["mode"],
                 "overlay": str(overlay),
                 "music_gain_db": MUSIC_GAIN_DB,
                 "voice_gain_db": 3.4,
@@ -151,6 +152,8 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
         args = inputs + [
             "-i",
             source.path,
+            "-map",
+            "0:V:0",
             "-an",
             "-vf",
             vf,

@@ -11,8 +11,8 @@ from app.buffer import BufferRunner, VoiceBuffer
 from app.config import check_render_config, check_transcription_config
 from app.contracts import ProcessingServices, Progress, Reporter
 from app.downloads import Downloader
-from app.footage import audio_duration
-from app.images import LocalImages, download_images
+from app.footage import LocalFootage, audio_duration
+from app.images import download_images
 from app.models import Transcript
 from app.pipeline import MediaPipeline
 from app.timeline import Plan, Source, build_plan, sentences_from_words
@@ -51,6 +51,7 @@ def build_media_pipeline(
             footage["minimum_words_for_new_clip"],
             footage["random_seed"],
             footage["avoid_immediate_repetition"],
+            mode=footage["mode"] if local else None,
         )
 
     def resolve(plan: Plan, directory: Path, stop: Event) -> Plan:
@@ -88,7 +89,7 @@ def build_media_pipeline(
 
 
 def build_services(config: dict[str, Any]) -> ProcessingServices:
-    """Use numbered local voices and reusable local images by default.
+    """Use numbered local voices and the configured shared footage pools.
 
     Baserow and Cloudinary are neither constructed nor validated here. Empty
     queues are successful no-ops, including when transcription is unconfigured.
@@ -113,7 +114,7 @@ def build_services(config: dict[str, Any]) -> ProcessingServices:
     return ProcessingServices(
         identity=buffer.identity,
         repository=lambda stop: buffer,
-        catalog=lambda stop: LocalImages(config["composition"]["images_directory"]),
+        catalog=lambda stop: LocalFootage(config, stop),
         executor=executor,
         validate=lambda: None,
     )

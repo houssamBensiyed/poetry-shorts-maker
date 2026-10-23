@@ -208,12 +208,13 @@ def main():
     parser.add_argument("command", choices=["add", "run"])
     parser.add_argument("audio", type=Path, nargs="?")
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--mode", choices=["image", "video", "hybrid"], help="Footage mode for run")
     parser.add_argument("--watch", action="store_true", help="Keep checking the voice buffer")
     args = parser.parse_args()
     config = load_config(args.config)
     if args.command == "add":
-        if args.audio is None or args.watch:
-            parser.error("add requires an audio file and does not accept --watch")
+        if args.audio is None or args.watch or args.mode:
+            parser.error("add requires an audio file and does not accept --watch or --mode")
         print(VoiceBuffer(config["paths"]["buffer"]).add(args.audio))
         return
     if args.audio is not None:
@@ -233,7 +234,7 @@ def main():
     previous = signal.signal(signal.SIGTERM, request_stop)
     try:
         while not shutdown.is_set():
-            if not processor.start():
+            if not processor.start(mode=args.mode):
                 raise SystemExit("Voice buffer is already being processed")
             processor.thread.join()
             status = processor.status()

@@ -47,7 +47,7 @@ class Dashboard(App):
     TITLE = "AI VIDEO BUILDER"
     CSS = """
     Screen { layout: vertical; }
-    #source { height: 3; }
+    #source, #mode { height: 3; }
     #status { height: 3; padding: 1; }
     #stats { height: 2; padding: 0 1; }
     #job { height: 5; padding: 0 1; }
@@ -88,6 +88,12 @@ class Dashboard(App):
             value="local",
             allow_blank=False,
             id="source",
+        )
+        yield Select(
+            [("Images", "image"), ("Videos", "video"), ("Hybrid — video first", "hybrid")],
+            value=self.processor.config["footage"]["mode"],
+            allow_blank=False,
+            id="mode",
         )
         yield Static("IDLE", id="status")
         yield Static("", id="stats")
@@ -135,6 +141,7 @@ class Dashboard(App):
         bar.update(total=None if active and value is None else 100, progress=value or 0)
         self.query_one("#start", Button).disabled = active or self.exiting
         self.query_one("#source", Select).disabled = active or self.exiting
+        self.query_one("#mode", Select).disabled = active or self.exiting
         self.query_one("#stop", Button).disabled = not active or state.get(
             "external_process", False
         )
@@ -158,6 +165,7 @@ class Dashboard(App):
                 started = self.processor.start(
                     prepare=self.prepare_baserow if source == "baserow" else None,
                     empty_message=EMPTY_BUFFER_MESSAGE,
+                    mode=self.query_one("#mode", Select).value,
                 )
                 if not started:
                     log.warning("Processing is already active in this or another process")

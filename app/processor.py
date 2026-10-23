@@ -46,6 +46,7 @@ class Processor:
         credentials and network access are deferred until refresh or start.
         """
         self.config = deepcopy(config)
+        self.default_services = services is None
         if services is None:
             # Compatibility entry point; adapter construction lives in one composition module.
             from app.bootstrap import build_services
@@ -102,6 +103,7 @@ class Processor:
         *,
         prepare: Callable[[threading.Event], None] | None = None,
         empty_message: str | None = None,
+        mode: str | None = None,
     ) -> bool:
         """Acquire queue ownership and launch a non-daemon worker thread.
 
@@ -112,10 +114,23 @@ class Processor:
         Optional preparation runs in the worker under the queue lock and shares
         cancellation. empty_message rejects an empty queue after preparation;
         omitted, an empty batch remains a successful no-op for polling callers.
+        mode selects a private local composition for this run without changing
+        defaults. Injected custom services own their mode policy and reject overrides.
         """
         with self.guard:
             if self.closed or self.refreshing or self.active:
                 return False
+            services = self.services
+            if mode is not None:
+                if mode not in ("image", "video", "hybrid"):
+                    raise ValueError("Footage mode must be image, video or hybrid")
+                if not self.default_services:
+                    raise ValueError("Mode overrides require the default local composition")
+                from app.bootstrap import build_services
+
+                run_config = deepcopy(self.config)
+                run_config["footage"]["mode"] = mode
+                services = build_services(run_config)
             if not self.run_lock.acquire():
                 return False
             try:
@@ -127,10 +142,11 @@ class Processor:
                     current_job=None,
                     voiceover="",
                     render_progress=None,
+                    mode=mode or self.config["footage"]["mode"],
                 )
                 self.thread = threading.Thread(
                     target=self._run,
-                    args=(prepare, empty_message),
+                    args=(prepare, empty_message, services),
                     name="video-processor",
                     daemon=False,
                 )
@@ -207,6 +223,7 @@ class Processor:
         self,
         prepare: Callable[[threading.Event], None] | None = None,
         empty_message: str | None = None,
+        services: ProcessingServices | None = None,
     ) -> None:
         """Validate services, snapshot the queue and execute pending jobs in order.
 
@@ -216,15 +233,16 @@ class Processor:
         exception stops the batch and becomes visible error state. Clear transient
         fields and release ownership in finally, including after cancellation.
         """
+        services = services if services is not None else self.services
         try:
             check_cancel(self.stop_event)
             if prepare is not None:
                 self.update(stage="Preparing voice buffer")
                 prepare(self.stop_event)
                 check_cancel(self.stop_event)
-            self.services.validate()
+            services.validate()
             check_cancel(self.stop_event)
-            repository = self.services.repository(self.stop_event)
+            repository = services.repository(self.stop_event)
             jobs = repository.jobs()
             self.update(**self._counts(jobs))
             pending = [job for job in jobs if job.status == "NOT_PROCESSED"]
@@ -237,8 +255,8 @@ class Processor:
                 )
             log.info("Found %d pending jobs", len(pending))
             if pending:
-                sources = self.services.catalog(self.stop_event).sources()
-                executor = self.services.executor(self.stop_event, self.update)
+                sources = services.catalog(self.stop_event).sources()
+                executor = services.executor(self.stop_event, self.update)
                 for job in pending:
                     check_cancel(self.stop_event)
                     self.update(

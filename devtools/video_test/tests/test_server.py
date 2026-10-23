@@ -62,6 +62,37 @@ def audio_bytes():
     return data.getvalue()
 
 
+@pytest.fixture
+def video_bytes(tmp_path):
+    path = tmp_path / "clip.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=80x120:r=20:d=0.2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=3000:duration=0.2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return path.read_bytes()
+
+
 def assert_voice_and_music_mixed(source, output, music):
     """Compare decoded samples against the requested voice/music mix, not just metadata."""
 
@@ -112,6 +143,7 @@ def assert_voice_and_music_mixed(source, output, music):
 def client(tmp_path, monkeypatch):
     config = load_config()
     config["composition"]["images_directory"] = str(tmp_path / "assets" / "images")
+    config["composition"]["videos_directory"] = str(tmp_path / "assets" / "videos")
     for key in config["paths"]:
         config["paths"][key] = str(tmp_path / key)
     config["video"].update(width=180, height=320, fps=20, preset="ultrafast")
@@ -124,10 +156,15 @@ def client(tmp_path, monkeypatch):
     # Every operation, including full renders and failed uploads, must preserve
     # production inputs and output directories exactly as they were.
     production = {}
-    production_paths = {**config["paths"], "images": config["composition"]["images_directory"]}
+    production_paths = {
+        **config["paths"],
+        "images": config["composition"]["images_directory"],
+        "videos": config["composition"]["videos_directory"],
+    }
     for key, name, content in [
         ("buffer", "voice-000001.wav", audio_bytes()),
         ("images", "production.png", image_bytes()),
+        ("videos", "production.mp4", b"untouched production clip"),
         ("output", "production.mp4", b"existing production video"),
     ]:
         directory = Path(production_paths[key])
@@ -249,6 +286,7 @@ def test_test_uploads_do_not_create_missing_production_directories(client, tmp_p
     config["composition"] = {
         **config["composition"],
         "images_directory": str(production / "images"),
+        "videos_directory": str(production / "videos"),
     }
     with TestClient(create_app(config), headers=HEADERS) as isolated:
         fill(isolated, session(isolated))
@@ -326,6 +364,83 @@ def test_real_render_from_buffer_and_video_download(client):
     second_output = temporary / "runs" / second["id"] / "video.mp4"
     assert_voice_and_music_mixed(voice, second_output, second["composition"]["music"])
     assert output.is_file()
+
+
+@pytest.mark.parametrize("mode", ["video", "hybrid"])
+def test_video_modes_render_looped_clips_with_voice_music_and_temp_isolation(
+    client, video_bytes, mode
+):
+    base = session(client)
+    assert (
+        client.post(f"{base}/media/audio?name=voice.wav", content=audio_bytes()).status_code == 201
+    )
+    response = client.post(f"{base}/media/video?name=../../clip.mp4", content=video_bytes)
+    assert response.status_code == 201, response.text
+    original = response.json()
+    item = original["videos"][0]
+    assert item["name"] == "clip.mp4" and item["duration"] == pytest.approx(0.2)
+    if mode == "hybrid":
+        assert client.post(f"{base}/media/image", content=image_bytes()).status_code == 201
+    assert client.post(f"{base}/run", json={"mode": mode, "size": "full"}).status_code == 202
+    state = wait(client, base)
+    run = state["run"]
+    assert run["status"] == "passed", run
+    work = Path(client.config["paths"]["temp"]) / "ui-test" / state["id"] / "runs" / run["id"]
+    plan = json.loads((work / "plan.json").read_text())
+    assert [i["start"] for i in plan["footage"]] == [0, 0.8, 1.5]
+    kinds = [i["source"]["kind"] for i in plan["footage"]]
+    assert kinds == (["video", "image", "video"] if mode == "hybrid" else ["video"] * 3)
+    assert run["composition"]["footage_mode"] == mode
+    assert all("/ui-test/" in i["source"]["path"] for i in plan["footage"])
+    # Decode the opening normalized segment to prove its first frame comes from the red clip.
+    pixels = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(work / "segment_0000.mp4"),
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "pipe:1",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    rgb = np.frombuffer(pixels, dtype=np.uint8).reshape(-1, 3).mean(axis=0)
+    assert rgb[0] > 240 and rgb[1] < 10 and rgb[2] < 10
+    output = work / "video.mp4"
+    assert float(probe(output)["format"]["duration"]) == pytest.approx(2, abs=0.05)
+    voice = work.parent.parent / "voiceovers" / original["audio"]["file"]
+    assert_voice_and_music_mixed(voice, output, run["composition"]["music"])
+    assert client.get(f"{base}/media/{item['id']}").content == video_bytes
+    assert client.get(f"{session(client)}/media/{item['id']}").status_code == 404
+    assert client.delete(f"{base}/media/{item['id']}").json()["videos"] == []
+    assert not (work.parent.parent / "videos" / item["file"]).exists()
+
+
+def test_video_upload_validation_and_mode_requirements(client, video_bytes, monkeypatch):
+    base = session(client)
+    assert (
+        client.post(f"{base}/media/audio?name=voice.wav", content=audio_bytes()).status_code == 201
+    )
+    for mode in ("video", "hybrid"):
+        assert client.post(f"{base}/run", json={"mode": mode}).status_code == 400
+    assert client.post(f"{base}/run", json={"mode": "invalid"}).status_code == 422
+    for content in (b"broken", image_bytes(), audio_bytes()):
+        assert client.post(f"{base}/media/video?name=clip.mp4", content=content).status_code == 400
+    assert client.post(f"{base}/media/video?name=clip.txt", content=video_bytes).status_code == 400
+    assert client.post(f"{base}/media/video?name=clip.mp4", content=video_bytes).status_code == 201
+    assert client.post(f"{base}/run", json={"mode": "hybrid"}).status_code == 400
+    monkeypatch.setattr("devtools.video_test.server.VIDEO_LIMIT", 10)
+    assert client.post(f"{base}/media/video?name=clip.mp4", content=video_bytes).status_code == 413
+    assert len(client.get(base).json()["videos"]) == 1
+    assert not list(Path(client.config["paths"]["temp"]).rglob("*.upload"))
+    assert not client.whisper_requests, "Invalid inputs must fail before transcription"
 
 
 def test_running_inputs_are_frozen_and_stop_releases_worker(client, monkeypatch):

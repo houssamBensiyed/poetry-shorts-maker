@@ -17,6 +17,7 @@ a successful no-op without provider validation.
 | `buffer/voiceovers/voice-*.ext` | Removed only after a successful render and saved receipt |
 | `buffer/voiceovers/.queue/` | Retain sequence, source mappings and completion/delivery receipts |
 | `assets/images/` | Reusable local images |
+| `assets/videos/` | Reusable local video clips |
 | `output/voice-*.mp4` | Finished reels; retained independently of upload success |
 | `temp/voice-*/` | Successful work is cleaned; failed work remains for diagnosis |
 | `logs/` | Rotating logs |
@@ -72,6 +73,7 @@ Edit existing values in [`config.yaml`](../config.yaml). Restart the dashboard o
 | `footage.minimum_words_for_new_clip` | Minimum sentence length for an image change; default 3 |
 | `footage.avoid_immediate_repetition` | Avoid choosing the same image consecutively when possible |
 | `footage.random_seed` | Integer for reproducible plans, or `null` for randomness |
+| `footage.mode` | `image` (default), `video`, or `hybrid` (video first) |
 | `composition.music_directory` | Local background music pool; one random track per reel |
 | `composition.overlay_file` | Local film-grain video blended using difference |
 | `captions.position` | `top`, `center` or `bottom` |
@@ -80,9 +82,10 @@ Edit existing values in [`config.yaml`](../config.yaml). Restart the dashboard o
 | `captions.color` / `captions.outline_color` / `captions.outline_width` | Caption colors and outline |
 | `paths.buffer` | Numbered audio queue directory |
 | `composition.images_directory` | Shared still-image pool, default `assets/images`; retained across reels |
+| `composition.videos_directory` | Shared video pool, default `assets/videos`; retained across reels |
 | `paths.output` / `paths.temp` / `paths.logs` | Output, working files and log directories |
 
-Paths resolve relative to `config.yaml`. Compose persists the default buffer/output/temp/logs locations and mounts `config.yaml` and `assets/images` read-only. If you move paths outside those locations, update the Compose mounts too.
+Paths resolve relative to `config.yaml`. Compose persists the default buffer/output/temp/logs locations and mounts `config.yaml`, `assets/images` and `assets/videos` read-only. If you move paths outside those locations, update the Compose mounts too.
 
 ### Credentials and uploads
 
@@ -144,6 +147,7 @@ Both endpoints require an `X-API-Key` header.
 | Endpoint | Behavior |
 | --- | --- |
 | `GET /run` | Starts pending jobs and returns HTTP 202; returns `already_running` with HTTP 200 if a run is active |
+| `GET /run?mode=image\|video\|hybrid` | Overrides the footage mode for this run; invalid modes return HTTP 422 |
 | `GET /status` | Returns current status, job counts, stage and progress |
 
 Export the same key in your client shell before running these commands. Compose reading `.env` does not export it for curl.
@@ -151,6 +155,7 @@ Export the same key in your client shell before running these commands. Compose 
 ```sh
 curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" http://127.0.0.1:8000/status
 curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" http://127.0.0.1:8000/run
+curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" 'http://127.0.0.1:8000/run?mode=hybrid'
 ```
 
 Never put the key in a URL. Docker publishes the API only on the host's loopback interface. Change its host port with `VIDEO_BUILDER_HTTP_PORT`. Remote access requires your own HTTPS reverse proxy forwarding the authentication header; disable caching and prefetching for `/run`.
@@ -161,6 +166,13 @@ docker compose stop api
 ```
 
 There is no scheduler or automatic processing at startup.
+
+The console has a separate footage-mode selector, independent of the local/Baserow
+voice source. The CLI supports `python -m app.buffer run --mode video` (also with
+`--watch`). Hybrid requires both shared asset pools and starts with a video;
+subsequent selections use the combined pool. Video mode does not require images.
+Missing/invalid required assets fail before transcription and retain queued voices.
+Use at least two clips if video mode should change files at each eligible cut.
 
 ## Running safely
 

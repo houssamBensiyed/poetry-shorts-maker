@@ -10,6 +10,11 @@ import math
 import subprocess
 from pathlib import Path
 
+from app.cancellation import check_cancel
+from app.timeline import Source
+
+VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
+
 
 def probe(path):
     """Return FFprobe's decoded stream and format JSON for path.
@@ -45,3 +50,57 @@ def audio_duration(path):
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError("Audio is empty or has no measurable duration")
     return duration
+
+
+def video_duration(path):
+    """Require a timed video stream, excluding attached cover images."""
+    data = probe(path)
+    video = next(
+        (
+            s
+            for s in data["streams"]
+            if s["codec_type"] == "video" and not s.get("disposition", {}).get("attached_pic")
+        ),
+        None,
+    )
+    if video is None:
+        raise ValueError(f"{Path(path).name} has no video stream")
+    duration = float(video.get("duration") or data["format"].get("duration") or 0)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError(f"{Path(path).name} has no measurable video duration")
+    return duration
+
+
+class LocalFootage:
+    """Snapshot shared assets for the selected mode without modifying any files."""
+
+    def __init__(self, config, stop=None):
+        self.config, self.stop = config, stop
+
+    def sources(self):
+        from app.images import LocalImages
+
+        mode = self.config["footage"]["mode"]
+        if mode not in ("image", "video", "hybrid"):
+            raise ValueError("Footage mode must be image, video or hybrid")
+        assets = self.config["composition"]
+        sources = []
+        if mode in ("image", "hybrid"):
+            sources.extend(LocalImages(assets["images_directory"]).sources())
+        if mode in ("video", "hybrid"):
+            videos = []
+            for path in sorted(Path(assets["videos_directory"]).glob("*")):
+                if self.stop is not None:
+                    check_cancel(self.stop)
+                if (
+                    path.suffix.lower() in VIDEO_SUFFIXES
+                    and path.is_file()
+                    and not path.is_symlink()
+                ):
+                    videos.append(Source(str(path.resolve()), "video", video_duration(path)))
+            if not videos:
+                raise ValueError(
+                    "Video asset directory is empty; add videos to composition.videos_directory"
+                )
+            sources.extend(videos)
+        return sources

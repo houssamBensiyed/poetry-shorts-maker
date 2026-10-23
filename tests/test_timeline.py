@@ -92,3 +92,52 @@ def test_long_punctuated_sentence_is_not_split_by_fallback():
     plan = build_plan(sentences, SOURCES, 4)
     assert len(plan.footage) == 1 and len(plan.captions) == 1
     assert len(plan.captions[0].sentence.words) == 30
+
+
+@pytest.mark.parametrize("mode", ["image", "video", "hybrid"])
+def test_modes_keep_sentence_cuts_and_randomize_without_immediate_repeats(mode):
+    sources = SOURCES + [Source("c.mp4", "video", 5), Source("d.png", "image")]
+    sentences = sentences_from_words(
+        [
+            Word(word, start + j * 0.1, start + j * 0.1 + 0.05)
+            for start, text in [
+                (0, "One two three."),
+                (1, "Short."),
+                (2, "Four five six."),
+                (4, "Seven eight nine."),
+            ]
+            for j, word in enumerate(text.split())
+        ],
+        6,
+    )
+    selections = set()
+    for seed in range(20):
+        plan = build_plan(sentences, sources, 6, seed=seed, mode=mode)
+        assert plan == build_plan(sentences, sources, 6, seed=seed, mode=mode)
+        assert [i.start for i in plan.footage] == [0, 2, 4]
+        assert all(
+            a.source != b.source for a, b in zip(plan.footage, plan.footage[1:], strict=False)
+        )
+        kinds = {i.source.kind for i in plan.footage}
+        if mode == "hybrid":
+            assert plan.footage[0].source.kind == "video"
+        else:
+            assert kinds == {mode}
+        for interval in plan.footage:
+            assert (
+                0
+                <= interval.offset
+                <= max(0, interval.source.duration - (interval.end - interval.start))
+            )
+        selections.add(tuple(i.source.path for i in plan.footage))
+    assert len(selections) > 1
+
+
+def test_hybrid_starts_with_video_even_without_speech_or_later_cuts():
+    for seed in range(10):
+        plan = build_plan([], SOURCES, 3, seed=seed, mode="hybrid")
+        assert len(plan.footage) == 1 and plan.footage[0].source.kind == "video"
+    with pytest.raises(ValueError, match="requires image and video"):
+        build_plan([], SOURCES[:1], 3, mode="hybrid")
+    with pytest.raises(ValueError, match="requires video"):
+        build_plan([], SOURCES[1:], 3, mode="video")

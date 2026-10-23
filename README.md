@@ -32,6 +32,21 @@ This shared pool is configured by `composition.images_directory` in `config.yaml
 The planner randomly selects from it for each reel; images are never consumed.
 Only audio is queued in the buffer.
 
+For video footage, put MP4, MOV, MKV, WebM, M4V or AVI clips directly into
+`assets/videos/` (`composition.videos_directory`). Choose a mode in the console,
+or set `footage.mode` in `config.yaml`: `image` (default), `video`, or `hybrid`.
+Video mode randomly selects clips; hybrid randomly selects from both pools and
+always opens with a video. Hybrid requires at least one image and one video.
+The existing sentence rule applies in every mode: a sentence of at least 3 words
+starts a new selection by default. Shorter sentences retain the current footage.
+Immediate repeats are avoided when another candidate exists. Clips start at a
+random usable offset and loop when shorter than their section; their audio is muted.
+
+Use `GET /run?mode=video` or `GET /run?mode=hybrid` for an API run, or
+`python -m app.buffer run --mode hybrid` from the CLI. These overrides apply only
+to that run; plain `/run` uses the configured default. The dev tool has the same
+three modes with separate test uploads stored under `temp/ui-test/`.
+
 When upgrading, move your existing still images from `buffer/images/` into
 `assets/images/` (preserve any same-name files). Git does not relocate ignored
 local media on other machines. Keep old UI test resources in `temp/`, outside
@@ -92,6 +107,7 @@ buffer/
     .queue/               # Persistent numbering, mappings and completion events
 assets/
   images/                 # Shared still images, randomly selected and retained
+  videos/                 # Shared video clips, randomly selected and retained
   music/                  # Background music pool
   overlays/               # Film overlay
 output/
@@ -103,7 +119,7 @@ temp/
 ## Video composition
 
 The renderer automatically uses the bundled assets for both normal processing
-and the dev tool. Your inputs remain a voice recording and images.
+and the dev tool. Inputs are a voice recording and the selected image/video pools.
 
 - Choose one random track from `assets/music/` per reel; loop it as needed at
   **−12.0 dB** and mix it with the original voice at **+3.4 dB**.

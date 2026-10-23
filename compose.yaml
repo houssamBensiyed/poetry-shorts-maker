@@ -13,6 +13,7 @@ x-common: &common
     - ./config.yaml:/app/config.yaml:ro
     - ./buffer:/app/buffer
     - ./assets/images:/app/assets/images:ro
+    - ./assets/videos:/app/assets/videos:ro
     - ./output:/app/output
     - ./temp:/app/temp
     - ./logs:/app/logs

@@ -86,7 +86,7 @@
         >
         <div class="sidebar-note">
           <span class="small-square"></span><span>Testing only</span>
-          <p>Run the video builder with your own images and voice.</p>
+          <p>Run the video builder with your own images, videos and voice.</p>
         </div>
         <div class="sidebar-bottom">
           <div class="local-mark">L</div>
@@ -110,7 +110,7 @@
               <div class="eyebrow"><span></span>VIDEO TESTING</div>
               <h1>Video Builder Test<span class="title-dot">.</span></h1>
               <p>
-                Upload images and a voice recording to test the video builder.
+                Choose images, videos or a hybrid mix, then add your voice recording.
               </p>
             </div>
             <span class="test-tag">LOCAL ONLY</span>
@@ -118,7 +118,7 @@
           <div id="message" class="message" role="alert" hidden></div>
           <div class="step-strip" aria-label="Test steps">
             <div id="step-images">
-              <b>01</b><span>Add images</span><svg><use href="#i-check" /></svg>
+              <b>01</b><span>Add footage</span><svg><use href="#i-check" /></svg>
             </div>
             <span class="step-line"></span>
             <div id="step-audio">
@@ -131,8 +131,18 @@
           </div>
           <div class="content-grid">
             <div class="input-column" id="inputs">
+              <section class="card">
+                <label for="mode">Footage mode</label>
+                <select id="mode">
+                  <option value="image">Images</option>
+                  <option value="video">Videos</option>
+                  <option value="hybrid">Hybrid — starts with a video</option>
+                </select>
+                <p class="field-help">Footage changes at qualifying sentence starts. Hybrid randomly mixes images and videos after the opening video.</p>
+              </section>
               <section
                 class="card images-card"
+                id="images-card"
                 aria-labelledby="images-heading"
               >
                 <div class="card-heading">
@@ -141,7 +151,7 @@
                     <h2 id="images-heading">Images</h2>
                     <span class="count" id="image-count">0 / 10</span>
                   </div>
-                  <span class="requirement">3–10 images required</span>
+                  <span class="requirement" id="image-requirement">3–10 images required</span>
                 </div>
                 <p class="card-description">
                   Images are saved to temporary storage as soon as you upload them.
@@ -173,6 +183,22 @@
                   ><code>temp/ui-test/…/images/</code
                   ><span id="image-status">Waiting for images</span>
                 </div>
+              </section>
+              <section class="card" id="videos-card" aria-labelledby="videos-heading" hidden>
+                <div class="card-heading">
+                  <div class="heading-group">
+                    <h2 id="videos-heading">Videos</h2>
+                    <span class="count" id="source-video-count">0 / 10</span>
+                  </div>
+                  <span class="requirement">1–10 videos required</span>
+                </div>
+                <p class="card-description">Short clips loop to fill their section. Clip audio is muted; the voice and music supply the soundtrack.</p>
+                <input type="file" id="video-input" accept="video/*,.mkv,.m4v,.avi" multiple hidden />
+                <button class="dropzone" id="video-drop" type="button">
+                  <span class="drop-title">Drop videos here, or <strong>choose files</strong></span>
+                  <span class="drop-detail">MP4, MOV, MKV, WebM, M4V, AVI · Up to 256 MB / 10 min each</span>
+                </button>
+                <div id="source-video-grid" class="image-grid" aria-label="Test session videos"></div>
               </section>
               <section class="card" aria-labelledby="voice-heading">
                 <div class="card-heading">
@@ -271,7 +297,7 @@
                 <details class="advanced">
                   <summary>More settings</summary>
                   <label
-                    >Image selection seed<input
+                    >Footage selection seed<input
                       id="seed"
                       type="number"
                       value="42"
@@ -280,9 +306,8 @@
                       step="1"
                   /></label>
                   <p class="field-help">
-                    The same seed and inputs give the same image selection. The
-                    core planner selects images from this test session; a run may not
-                    use every image.
+                    The same seed and inputs give the same footage selection. A run may not
+                    use every file in this test session.
                   </p>
                 </details>
               </section>
@@ -402,7 +427,7 @@
               <div class="checklist">
                 <h3>Before you run</h3>
                 <div id="check-images">
-                  <span></span>At least 3 images in this test session
+                  <span></span><span id="check-footage-text">At least 3 images in this test session</span>
                 </div>
                 <div id="check-audio">
                   <span></span>One voice recording in this test session

@@ -3,8 +3,11 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from fastapi.testclient import TestClient
 from PIL import Image
 
+from api import create_app
 from app.buffer import VoiceBuffer
 from app.config import load_config
 from app.footage import probe
@@ -116,3 +119,61 @@ def test_missing_shared_images_keeps_voice_and_never_falls_back_to_providers(
         assert not Path(config["composition"]["images_directory"]).exists()
     finally:
         processor.close()
+
+
+@pytest.mark.parametrize("mode", ["image", "video", "hybrid"])
+def test_api_mode_reaches_real_renderer_and_keeps_assets(
+    monkeypatch, tmp_path, file_server, video_asset, mode
+):
+    config = local_config(tmp_path)
+    config["composition"]["videos_directory"] = str(video_asset.parent)
+    if mode != "video":
+        directory = Path(config["composition"]["images_directory"])
+        directory.mkdir(parents=True)
+        Image.new("RGB", (80, 120), "blue").save(directory / "image.png")
+    original = video_asset.read_bytes()
+    monkeypatch.setenv("VIDEO_BUILDER_API_KEY", "test-only")
+    monkeypatch.setenv("WHISPER_API_KEY", "test-only")
+    monkeypatch.setattr(
+        "app.bootstrap.Transcriber",
+        lambda config: SimpleNamespace(
+            transcribe=lambda *args: Transcript(
+                tuple(
+                    Word(word, start + j * 0.04, start + j * 0.04 + 0.02)
+                    for start in (0, 0.35, 0.7)
+                    for j, word in enumerate("One two three.".split())
+                ),
+                (),
+            )
+        ),
+    )
+    from app.video_builder import render
+
+    plans = []
+
+    def record(plan, *args):
+        plans.append(plan)
+        return render(plan, *args)
+
+    monkeypatch.setattr("app.bootstrap.render", record)
+    audio = tmp_path / "voice.wav"
+    audio.write_bytes(file_server[1])
+    buffer = VoiceBuffer(config["paths"]["buffer"])
+    voice = buffer.add(audio)
+    processor = Processor(config)
+    with TestClient(create_app(config, processor)) as client:
+        headers = {"X-API-Key": "test-only"}
+        assert client.get("/run?mode=invalid", headers=headers).status_code == 422
+        assert voice.exists() and not processor.active
+        assert client.get(f"/run?mode={mode}", headers=headers).status_code == 202
+        processor.thread.join(timeout=20)
+        assert not processor.active
+        status = client.get("/status", headers=headers).json()
+        assert status["completed"] == 1 and status["failed"] == 0, status
+        assert status["mode"] == mode
+        assert processor.config["footage"]["mode"] == "image", "Overrides are per-run"
+    kinds = [interval.source.kind for interval in plans[0].footage]
+    assert kinds == (["video", "image", "video"] if mode == "hybrid" else [mode] * 3)
+    assert not voice.exists() and video_asset.read_bytes() == original
+    output = Path(buffer.events()[0]["output"])
+    assert abs(float(probe(output)["format"]["duration"]) - 1) < 0.05

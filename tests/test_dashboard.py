@@ -3,6 +3,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 from textual.widgets import Button, RichLog, Select
 
@@ -172,6 +173,7 @@ def test_baserow_import_can_be_stopped_and_source_is_locked_while_busy(tmp_path,
                 assert await asyncio.to_thread(entered.wait, 2)
                 await pilot.pause()
                 assert app.query_one("#source", Select).disabled
+                assert app.query_one("#mode", Select).disabled
                 assert app.query_one("#start", Button).disabled
                 assert not app.query_one("#stop", Button).disabled
                 assert p.run_lock.busy() and not p.start()
@@ -179,6 +181,46 @@ def test_baserow_import_can_be_stopped_and_source_is_locked_while_busy(tmp_path,
                 await finish_run(p, pilot)
                 assert p.status()["stage"] == "Stopped" and not p.run_lock.busy()
                 assert not app.query_one("#source", Select).disabled
+                await pilot.click("#exit")
+        finally:
+            p.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("mode", ["video", "hybrid"])
+def test_console_selects_footage_mode(tmp_path, monkeypatch, file_server, video_asset, mode):
+    c = local_config(tmp_path)
+    c["composition"]["videos_directory"] = str(video_asset.parent)
+    if mode == "hybrid":
+        directory = Path(c["composition"]["images_directory"])
+        directory.mkdir(parents=True)
+        Image.new("RGB", (80, 120), "blue").save(directory / "image.png")
+    monkeypatch.setenv("WHISPER_API_KEY", "test-only")
+    monkeypatch.setattr(
+        "app.bootstrap.Transcriber",
+        lambda config: SimpleNamespace(
+            transcribe=lambda *args: Transcript((Word("Hello.", 0.1, 0.7),), ())
+        ),
+    )
+    source = tmp_path / "voice.wav"
+    source.write_bytes(file_server[1])
+    queue = VoiceBuffer(c["paths"]["buffer"])
+    voice = queue.add(source)
+
+    async def scenario():
+        p = Processor(c)
+        try:
+            async with Dashboard(p, configure(tmp_path)).run_test(size=(80, 34)) as pilot:
+                p_app = pilot.app
+                await pilot.click("#mode")
+                await pilot.press("end" if mode == "hybrid" else "down", "enter")
+                assert p_app.query_one("#mode", Select).value == mode
+                await pilot.click("#start")
+                await finish_run(p, pilot)
+                assert p.status()["mode"] == mode
+                assert p.status()["completed"] == 1 and p.status()["failed"] == 0, p.status()
+                assert not voice.exists()
                 await pilot.click("#exit")
         finally:
             p.close()

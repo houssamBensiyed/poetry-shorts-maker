@@ -19,3 +19,6 @@ buffer/voiceovers/*
 
 assets/images/*
 !assets/images/.gitkeep
+
+assets/videos/*
+!assets/videos/.gitkeep

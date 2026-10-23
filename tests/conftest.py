@@ -9,6 +9,37 @@ from PIL import Image
 
 
 @pytest.fixture
+def video_asset(tmp_path):
+    path = tmp_path / "clip.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=80x120:r=20:d=0.2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=3000:duration=0.2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return path
+
+
+@pytest.fixture
 def composition_assets(tmp_path):
     """Short distinct-tone music and a gray overlay with deliberately unwanted audio."""
     music = tmp_path / "music"

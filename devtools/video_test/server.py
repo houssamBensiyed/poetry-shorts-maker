@@ -33,7 +33,7 @@ from app.config import (
     check_transcription_config,
     load_config,
 )
-from app.footage import audio_duration
+from app.footage import VIDEO_SUFFIXES, audio_duration, video_duration
 from app.timeline import Source, build_plan, sentences_from_words
 from app.transcription import Transcriber
 from app.video_builder import render
@@ -41,6 +41,7 @@ from app.video_builder import render
 STATIC = Path(__file__).parent / "static"
 IMAGE_LIMIT = 20 * 1024 * 1024
 AUDIO_LIMIT = 100 * 1024 * 1024
+VIDEO_LIMIT = 256 * 1024 * 1024
 log = logging.getLogger(__name__)
 
 
@@ -50,6 +51,7 @@ class RunOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     size: Literal["preview", "full"] = "preview"
+    mode: Literal["image", "video", "hybrid"] = "image"
     seed: int = Field(default=42, ge=0, le=2147483647)
 
 
@@ -59,6 +61,7 @@ class Session:
     def __init__(self, config):
         self.id = uuid.uuid4().hex
         self.images = []
+        self.videos = []
         self.audio = None
         self.lock = threading.RLock()
         self.uploading = False
@@ -66,6 +69,7 @@ class Session:
         self.thread = None
         self.directory = Path(config["paths"]["temp"]).resolve() / "ui-test" / self.id
         self.image_dir = self.directory / "images"
+        self.video_dir = self.directory / "videos"
         self.audio_dir = self.directory / "voiceovers"
         self.run = None
 
@@ -86,6 +90,7 @@ class Session:
                 {
                     "id": self.id,
                     "images": self.images,
+                    "videos": self.videos,
                     "audio": self.audio,
                     "run": self.run,
                     "uploading": self.uploading,
@@ -150,7 +155,11 @@ def create_app(config=None):
         return sessions[session_id]
 
     def media_path(session, item):
-        folder = session.image_dir if item["kind"] == "image" else session.audio_dir
+        folder = {
+            "image": session.image_dir,
+            "video": session.video_dir,
+            "audio": session.audio_dir,
+        }[item["kind"]]
         return folder / item["file"]
 
     @app.get("/api/info")
@@ -191,21 +200,30 @@ def create_app(config=None):
         return get_session(session_id).snapshot()
 
     @app.post("/api/sessions/{session_id}/media/{kind}", status_code=201)
-    async def upload(session_id: str, kind: Literal["image", "audio"], request: Request):
+    async def upload(session_id: str, kind: Literal["image", "video", "audio"], request: Request):
         session = get_session(session_id)
         with session.lock:
             session.available()
             if kind == "image" and len(session.images) >= 10:
                 raise HTTPException(400, "A test session can hold up to 10 images.")
+            if kind == "video" and len(session.videos) >= 10:
+                raise HTTPException(400, "A test session can hold up to 10 videos.")
             session.uploading = True
         media_id = uuid.uuid4().hex
-        folder = session.image_dir if kind == "image" else session.audio_dir
+        folder = {
+            "image": session.image_dir,
+            "video": session.video_dir,
+            "audio": session.audio_dir,
+        }[kind]
         pending = folder / f"{media_id}.upload"
         final = None
         try:
             folder.mkdir(parents=True, exist_ok=True)
             name = Path(request.query_params.get("name", "upload").replace("\\", "/")).name[:150]
-            size, limit = 0, IMAGE_LIMIT if kind == "image" else AUDIO_LIMIT
+            size, limit = (
+                0,
+                {"image": IMAGE_LIMIT, "video": VIDEO_LIMIT, "audio": AUDIO_LIMIT}[kind],
+            )
             with pending.open("xb") as dest:
                 async for chunk in request.stream():
                     size += len(chunk)
@@ -231,6 +249,16 @@ def create_app(config=None):
                         return image.size
 
                 item["width"], item["height"] = await asyncio.to_thread(decode)
+            elif kind == "video":
+                duration = await asyncio.to_thread(video_duration, pending)
+                if duration > 600:
+                    raise ValueError("Use a video shorter than 10 minutes.")
+                extension = Path(name).suffix.lower()
+                if extension not in VIDEO_SUFFIXES:
+                    raise ValueError("Use an MP4, MOV, MKV, WebM, M4V or AVI video.")
+                item["duration"] = duration
+                final = folder / f"{media_id}{extension}"
+                pending.replace(final)
             else:
                 duration = await asyncio.to_thread(audio_duration, pending)
                 if duration > 600:
@@ -245,6 +273,8 @@ def create_app(config=None):
             with session.lock:
                 if kind == "image":
                     session.images.append(item)
+                elif kind == "video":
+                    session.videos.append(item)
                 else:
                     if session.audio:
                         media_path(session, session.audio).unlink(missing_ok=True)
@@ -267,7 +297,7 @@ def create_app(config=None):
     def media(session_id: str, media_id: str):
         session = get_session(session_id)
         with session.lock:
-            items = session.images + ([session.audio] if session.audio else [])
+            items = session.images + session.videos + ([session.audio] if session.audio else [])
             item = next((item for item in items if item["id"] == media_id), None)
             if item is None:
                 raise HTTPException(404, "File not found.")
@@ -278,13 +308,15 @@ def create_app(config=None):
         session = get_session(session_id)
         with session.lock:
             session.available()
-            items = session.images + ([session.audio] if session.audio else [])
+            items = session.images + session.videos + ([session.audio] if session.audio else [])
             item = next((item for item in items if item["id"] == media_id), None)
             if item is None:
                 raise HTTPException(404, "File not found.")
             media_path(session, item).unlink(missing_ok=True)
             if item["kind"] == "image":
                 session.images.remove(item)
+            elif item["kind"] == "video":
+                session.videos.remove(item)
             else:
                 session.audio = None
         return session.snapshot()
@@ -309,13 +341,17 @@ def create_app(config=None):
             footage = config["footage"]
             plan = build_plan(
                 sentences_from_words(words, duration),
-                [Source(str(media_path(session, item)), "image") for item in session.images],
+                [
+                    Source(str(media_path(session, item)), item["kind"], item.get("duration", 0))
+                    for item in session.images + session.videos
+                ],
                 duration,
                 threshold=footage["minimum_words_for_new_clip"],
                 seed=options.seed,
                 avoid_repeat=footage["avoid_immediate_repetition"],
+                mode=options.mode,
             )
-            session.event(f"Timeline ready · {len(plan.footage)} image sections", 10)
+            session.event(f"Timeline ready · {len(plan.footage)} footage sections", 10)
             session.event("Building video", 10)
 
             def progress(value):
@@ -357,10 +393,16 @@ def create_app(config=None):
         session = get_session(session_id)
         with session.lock:
             session.available()
-            if not 3 <= len(session.images) <= 10 or not session.audio:
+            if not session.audio:
+                raise HTTPException(400, "Add one voice recording before running a test.")
+            if options.mode == "image" and not 3 <= len(session.images) <= 10:
                 raise HTTPException(
                     400, "Add 3–10 images and one voice recording before running a test."
                 )
+            if options.mode in ("video", "hybrid") and not session.videos:
+                raise HTTPException(400, "Add at least one video for video or hybrid mode.")
+            if options.mode == "hybrid" and not session.images:
+                raise HTTPException(400, "Add at least one image for hybrid mode.")
             try:
                 check_transcription_config(config)
                 check_render_config(config)
@@ -375,6 +417,7 @@ def create_app(config=None):
             run_config = copy.deepcopy(config)
             # The test seed reproduces both image selection and the music choice.
             run_config["footage"]["random_seed"] = options.seed
+            run_config["footage"]["mode"] = options.mode
             if options.size == "preview":
                 scale = 360 / config["video"]["width"]
                 height = max(2, round(config["video"]["height"] * scale / 2) * 2)

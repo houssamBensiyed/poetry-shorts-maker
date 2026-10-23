@@ -821,13 +821,24 @@ textarea {
   border-bottom: 1px solid #738164;
   border-right: 1px solid #738164;
 }
-video {
+#video-player {
   width: 100%;
   height: 100%;
   object-fit: contain;
   position: absolute;
   inset: 0;
   background: #111;
+}
+#source-video-grid {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+.source-video {
+  display: block;
+  width: 100%;
+  height: 160px;
+  object-fit: contain;
+  background: #111;
+  border-radius: 5px;
 }
 .video-facts {
   display: grid;
@@ -925,7 +936,7 @@ video {
   font-size: 10px;
   margin: 9px 0;
 }
-.checklist > div > span {
+.checklist > div > span:first-child {
   width: 13px;
   height: 13px;
   border: 1px solid #ccd3c1;
@@ -935,11 +946,11 @@ video {
 .checklist .complete {
   color: var(--green);
 }
-.checklist .complete > span {
+.checklist .complete > span:first-child {
   background: #dcebdd;
   border-color: #bad2bd;
 }
-.checklist .complete > span:after {
+.checklist .complete > span:first-child:after {
   content: "";
   position: absolute;
   width: 5px;
