@@ -10,6 +10,7 @@ from app.buffer import VoiceBuffer
 from app.config import load_config
 from app.models import Job, Transcript
 from app.processor import Processor
+from app.state import RunLock
 from app.timeline import Word
 
 
@@ -116,6 +117,40 @@ def test_refill_does_not_contact_provider_with_pending_voice(tmp_path):
     buffer.add(source)
     service = BufferAutomations(config, table=lambda: pytest.fail("Buffer is not empty"))
     assert service.refill() == 0
+
+
+def test_explicit_import_rejects_existing_local_voices_before_contacting_sheet(tmp_path):
+    config = setup(tmp_path)
+    source = tmp_path / "recording.wav"
+    source.write_bytes(b"audio")
+    buffer = VoiceBuffer(config["paths"]["buffer"])
+    voice = buffer.add(source)
+    service = BufferAutomations(config, table=lambda: pytest.fail("Process local voices first"))
+    with pytest.raises(ValueError, match="already contains voices"):
+        service.import_for_processing()
+    assert voice.exists()
+
+
+def test_explicit_import_reports_no_ready_rows_and_releases_automation_lock(tmp_path):
+    config = setup(tmp_path)
+    service = BufferAutomations(config, table=lambda: SimpleNamespace(jobs=lambda: []))
+    with pytest.raises(ValueError, match="No new NOT_PROCESSED"):
+        service.import_for_processing()
+    lock = RunLock(service.buffer.identity + ":automations")
+    assert lock.acquire()
+    lock.release()
+
+
+def test_explicit_import_cannot_overlap_the_polling_listener(tmp_path):
+    service = BufferAutomations(setup(tmp_path), table=lambda: pytest.fail("Already importing"))
+    lock = RunLock(service.buffer.identity + ":automations")
+    assert lock.acquire()
+    try:
+        with pytest.raises(RuntimeError, match="automation is busy"):
+            service.import_for_processing()
+        assert lock.busy()
+    finally:
+        lock.release()
 
 
 def test_unmapped_local_voice_does_not_trigger_upload_or_sheet_update(tmp_path):

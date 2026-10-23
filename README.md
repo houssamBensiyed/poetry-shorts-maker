@@ -56,9 +56,23 @@ Run one batch, open the dashboard, or keep polling for new voices:
 ```
 
 Only choose one worker at a time. The dashboard and API share the same buffer
-lock. Dashboard **Start Processing** drains a snapshot; **Refresh Jobs** reads local
-counts. An empty buffer succeeds without contacting any provider. `--watch` checks
-again every five seconds. Both buffer commands accept `--config /path/to/local.yaml`.
+lock. In the dashboard, choose the input source before **Start Processing**:
+
+- **Local buffer** (default) processes already-buffered voices. An empty buffer
+  is rejected with a message to add local voices or choose Baserow.
+- **Baserow** imports ready voices into an empty buffer, then processes them with
+  the same local worker. If local voices are waiting, process those first. If no
+  new `NOT_PROCESSED` rows are available, the console reports that instead of
+  starting an empty render run.
+
+**Refresh Buffer** reads local counts. Source selection is locked while importing
+or processing, and **Stop Processing** cancels either operation cooperatively.
+Choosing local mode never automatically falls back to Baserow. Cloudinary
+publication remains a separate optional automation.
+
+The buffer CLI and API retain their empty-queue no-op behavior for polling.
+`--watch` checks again every five seconds. Both buffer commands accept
+`--config /path/to/local.yaml`.
 
 The default filesystem layout is:
 

@@ -98,6 +98,25 @@ Caption layout reserves space for the entire sentence before revealing words at 
 
 Progressive word reveal, word timestamps and silence persistence are required by this version. Output uses H.264, AAC, yuv420p and fast-start metadata. AAC preserves timing and meaningful silence but does not copy the original audio bytes unchanged.
 
+## Console input source
+
+Run `python main.py` and choose **Local buffer** or **Baserow** before starting.
+Local mode processes only numbered voices already on disk. If none are waiting,
+the console rejects the request and asks you to add local voices or import them
+from Baserow. It never contacts Baserow automatically to resolve an empty selection.
+
+Baserow mode imports `NOT_PROCESSED` rows into an empty local voice buffer, then
+runs the local worker. Configure the source table and database token first;
+Cloudinary credentials are not required for this step. A populated local queue
+must be processed first. No eligible source rows, missing configuration and import
+errors appear in console status. Successfully imported files remain available if
+a later import fails; switch to local mode to process them after fixing the cause.
+
+**Refresh Buffer** refreshes disk counts regardless of the selected source.
+**Stop Processing** also stops an active import at its cancellation checkpoints.
+The source selector is disabled until import/processing finishes. Completion
+publication and sheet updates remain in the separate automation listener.
+
 ## HTTP API
 
 Set `VIDEO_BUILDER_API_KEY` in `.env`, then start the API:

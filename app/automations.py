@@ -51,6 +51,33 @@ class BufferAutomations:
     def _origin_key(self, origin):
         return (origin["api_url"].rstrip("/"), origin["table_id"], origin["row_id"])
 
+    def import_for_processing(self):
+        """Explicitly import an empty queue for a console processing run.
+
+        The caller owns the processing lock. Share the automation lock with the
+        polling listener so concurrent imports cannot enqueue duplicate rows.
+        Publication remains a separate optional operation.
+        """
+        lock = RunLock(self.buffer.identity + ":automations")
+        if not lock.acquire():
+            raise RuntimeError("Buffer automation is busy. Wait for it to finish, then try again.")
+        try:
+            check_cancel(self.stop)
+            if any(job.status == "NOT_PROCESSED" for job in self.buffer.jobs()):
+                raise ValueError(
+                    "The local buffer already contains voices. Choose Local buffer to process "
+                    "them before importing from Baserow."
+                )
+            imported = self.refill()
+            if not imported:
+                raise ValueError(
+                    "No new NOT_PROCESSED voices are available in Baserow. "
+                    "Add ready rows to the sheet and try again."
+                )
+            return imported
+        finally:
+            lock.release()
+
     def refill(self):
         """Import ready source rows only when no voice is waiting locally.
 

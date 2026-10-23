@@ -8,7 +8,7 @@ injected through ProcessingServices so the coordinator only schedules work.
 
 import logging
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from typing import Any
 
@@ -97,13 +97,21 @@ class Processor:
                 return {**self.run_lock.external_state(), "external_process": True}
             return {**self.state.snapshot(), "external_process": False}
 
-    def start(self) -> bool:
+    def start(
+        self,
+        *,
+        prepare: Callable[[threading.Event], None] | None = None,
+        empty_message: str | None = None,
+    ) -> bool:
         """Acquire queue ownership and launch a non-daemon worker thread.
 
         Return False if closed, refreshing, locally active, or locked by another
         process. True means the worker started, not that validation or jobs succeeded.
         On thread-start failure, publish local error state, release the lock and
         re-raise so a broken start cannot leave the queue permanently claimed.
+        Optional preparation runs in the worker under the queue lock and shares
+        cancellation. empty_message rejects an empty queue after preparation;
+        omitted, an empty batch remains a successful no-op for polling callers.
         """
         with self.guard:
             if self.closed or self.refreshing or self.active:
@@ -121,7 +129,10 @@ class Processor:
                     render_progress=None,
                 )
                 self.thread = threading.Thread(
-                    target=self._run, name="video-processor", daemon=False
+                    target=self._run,
+                    args=(prepare, empty_message),
+                    name="video-processor",
+                    daemon=False,
                 )
                 self.thread.start()
             except Exception as exc:
@@ -192,7 +203,11 @@ class Processor:
             failed=sum(j.status == "FAILED" for j in jobs),
         )
 
-    def _run(self) -> None:
+    def _run(
+        self,
+        prepare: Callable[[threading.Event], None] | None = None,
+        empty_message: str | None = None,
+    ) -> None:
         """Validate services, snapshot the queue and execute pending jobs in order.
 
         Read the source catalog once only when work exists. Decrement pending as
@@ -202,12 +217,19 @@ class Processor:
         fields and release ownership in finally, including after cancellation.
         """
         try:
+            check_cancel(self.stop_event)
+            if prepare is not None:
+                self.update(stage="Preparing voice buffer")
+                prepare(self.stop_event)
+                check_cancel(self.stop_event)
             self.services.validate()
             check_cancel(self.stop_event)
             repository = self.services.repository(self.stop_event)
             jobs = repository.jobs()
             self.update(**self._counts(jobs))
             pending = [job for job in jobs if job.status == "NOT_PROCESSED"]
+            if not pending and empty_message is not None:
+                raise ValueError(empty_message)
             stuck = sum(job.status == "PROCESSING" for job in jobs)
             if stuck:
                 log.warning(

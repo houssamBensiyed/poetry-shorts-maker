@@ -10,6 +10,7 @@ publication are independent optional adapters.
 | `VoiceBuffer` in `app/buffer.py` | Strict numbering, atomic enqueue, source metadata and completion outbox |
 | `LocalImages` | Reusable local image candidates |
 | `Processor` | Sequential scheduling, cancellation, shared lock and observable counts |
+| `Dashboard` | Explicit local/Baserow source selection and empty-buffer feedback |
 | `BufferRunner` | Render one buffered voice; save event and consume source on success |
 | `MediaPipeline.run_local()` | Probe audio, transcribe, plan, resolve local media and render |
 | `bootstrap.build_services()` | Compose the local default without Baserow or Cloudinary |
@@ -20,6 +21,28 @@ The dashboard, HTTP API and buffer CLI all use the same default Processor.
 Transcription remains injectable; the default adapter uses the configured hosted
 speech API. The queue and renderer do not require a Baserow table or Cloudinary
 account. Remote provider modules are not imported by the default composition.
+
+## Console source selection
+
+The dashboard defaults to Local buffer. It starts Processor with an explicit
+empty-queue error message so an empty local selection is rejected before catalog
+loading, transcription or rendering. The user can add voices locally or select
+Baserow; there is no implicit remote fallback.
+
+Selecting Baserow supplies an optional preparation callback to `Processor.start`.
+It runs in the existing worker thread, under the same processing lock and stop
+event. Only this explicitly selected callback loads `BufferAutomations` and calls
+`import_for_processing()`. Import rejects an already-populated voice queue,
+serializes with the polling automation listener, and reports no eligible rows.
+After a successful import, Processor reads the local snapshot and renders through
+the existing local composition. Cloudinary delivery is not part of this action.
+
+Source/start controls stay disabled while import or rendering is active. Stop and
+graceful exit use the shared cancellation event. Any import failure releases run
+ownership and leaves successfully imported files available for a later local run.
+The callback and empty-message parameters are generic; Processor still imports
+no provider implementations. API and CLI callers omit them, preserving successful
+empty no-ops for polling.
 
 ## Local sequence
 

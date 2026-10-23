@@ -7,13 +7,18 @@ not automatically contact providers or start jobs.
 """
 
 import logging
+from threading import Event
 
 from textual.app import App, ComposeResult
 from textual.containers import Grid, Horizontal
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, ProgressBar, RichLog, Static
+from textual.widgets import Button, Footer, Header, ProgressBar, RichLog, Select, Static
 
 log = logging.getLogger("video_builder")
+EMPTY_BUFFER_MESSAGE = (
+    "The local voice buffer is empty. Add voice files to the buffer or choose "
+    "Baserow to import them."
+)
 
 
 class ConfirmExit(ModalScreen):
@@ -42,6 +47,7 @@ class Dashboard(App):
     TITLE = "AI VIDEO BUILDER"
     CSS = """
     Screen { layout: vertical; }
+    #source { height: 3; }
     #status { height: 3; padding: 1; }
     #stats { height: 2; padding: 0 1; }
     #job { height: 5; padding: 0 1; }
@@ -74,6 +80,15 @@ class Dashboard(App):
         appear literally instead of being interpreted as terminal formatting.
         """
         yield Header()
+        yield Select(
+            [
+                ("Local buffer — process buffered voices", "local"),
+                ("Baserow — import voices, then process", "baserow"),
+            ],
+            value="local",
+            allow_blank=False,
+            id="source",
+        )
         yield Static("IDLE", id="status")
         yield Static("", id="stats")
         yield Static("", id="job", markup=False)
@@ -82,7 +97,7 @@ class Dashboard(App):
         with Grid(id="actions"):
             yield Button("Start Processing", id="start", variant="success")
             yield Button("Stop Processing", id="stop", variant="warning")
-            yield Button("Refresh Jobs", id="refresh")
+            yield Button("Refresh Buffer", id="refresh")
             yield Button("View Logs", id="view")
             yield Button("Exit", id="exit")
         yield Footer()
@@ -90,7 +105,10 @@ class Dashboard(App):
     def on_mount(self):
         """Start 200 ms display polling and show the initial idle snapshot."""
         self.set_interval(0.2, self.refresh_display)
-        log.info("Dashboard ready. Add numbered voices and local images, then Start Processing.")
+        log.info(
+            "Choose Local buffer to process existing voices, or Baserow to import "
+            "voices into an empty buffer before processing."
+        )
         self.refresh_display()
 
     def refresh_display(self):
@@ -116,6 +134,7 @@ class Dashboard(App):
         value = state.get("render_progress")
         bar.update(total=None if active and value is None else 100, progress=value or 0)
         self.query_one("#start", Button).disabled = active or self.exiting
+        self.query_one("#source", Select).disabled = active or self.exiting
         self.query_one("#stop", Button).disabled = not active or state.get(
             "external_process", False
         )
@@ -134,8 +153,17 @@ class Dashboard(App):
         """
         action = event.button.id
         if action == "start":
-            if not self.processor.start():
-                log.warning("Processing is already active in this or another process")
+            source = self.query_one("#source", Select).value
+            try:
+                started = self.processor.start(
+                    prepare=self.prepare_baserow if source == "baserow" else None,
+                    empty_message=EMPTY_BUFFER_MESSAGE,
+                )
+                if not started:
+                    log.warning("Processing is already active in this or another process")
+            except Exception:
+                log.exception("Could not start processing")
+            self.refresh_display()
         elif action == "stop":
             self.processor.stop()
         elif action == "refresh":
@@ -148,6 +176,14 @@ class Dashboard(App):
             self.query_one("#logs", RichLog).focus()
         elif action == "exit":
             self.action_request_exit()
+
+    def prepare_baserow(self, stop: Event) -> None:
+        """Load the optional importer only after the user selects Baserow."""
+        from app.automations import BufferAutomations
+
+        self.processor.update(stage="Importing voices from Baserow")
+        count = BufferAutomations(self.processor.config, stop).import_for_processing()
+        log.info("Imported %d voices from Baserow; processing the local buffer", count)
 
     def refresh_jobs(self):
         """Read job counts in the background and log any repository failure.
