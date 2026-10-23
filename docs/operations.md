@@ -23,8 +23,9 @@ a successful no-op without provider validation.
 
 Optional `python -m app.automations --watch` imports direct HTTP(S) audio links
 from Baserow only when the local queue is empty, and seeds an empty image pool.
-Provider downloads reject incomplete files, login pages and invalid media. Nested
-legacy and test-tool buffer directories are not added to the numbered queue.
+Provider downloads reject incomplete files, login pages and invalid media. The dev
+tool keeps all test uploads, rendered videos and diagnostics under `temp/ui-test/`.
+Nested legacy buffer directories are not added to the numbered queue.
 See [the local quick start](../README.md#local-quick-start).
 
 ## Transcription provider

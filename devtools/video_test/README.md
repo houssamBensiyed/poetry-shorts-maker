@@ -15,8 +15,8 @@ No Node build, new runtime dependency, Baserow or Cloudinary setup is needed.
 The launcher only listens on your own computer.
 
 1. Upload 3–10 JPG, PNG or WebP images. Each is decoded, its EXIF orientation is
-   applied, and it is saved as PNG directly in the image buffer.
-2. Upload one voice recording. It is saved unchanged in the voice buffer and
+   applied, and it is saved as PNG in the temporary session directory.
+2. Upload one voice recording. It is saved unchanged in the temporary session and
    checked with the project's FFprobe helper. You can listen to it in the UI.
 3. Choose fast preview or the full video size from `config.yaml`.
 4. Click **Run test**. Whisper transcribes the voice, then the builder creates the video.
@@ -49,7 +49,7 @@ and timestamps control the captions and image changes. A transcription error fai
 the test before rendering; no sample text or estimated timing is substituted.
 The transcript is saved as `transcript.json` in the run's temporary folder.
 With the default configuration, sentences of at least three words trigger image
-changes. The core planner selects from the image buffer, so a run may not use every
+changes. The core planner selects from the test session’s images, so a run may not use every
 image. The seed makes that selection repeatable.
 
 The UI calls `Transcriber.transcribe()`, `sentences_from_words()`, `build_plan()` and
@@ -65,21 +65,27 @@ Only one test runs at a time across browser sessions. Uploads and removals are
 blocked while that session is rendering. **Stop test** requests cancellation of
 FFmpeg; the UI waits for the worker to finish before allowing edits.
 
-Files use unique session and run folders under the configured paths:
+All uploads, generated videos and diagnostics use unique session/run folders under
+`paths.temp` (normally `temp/`). Production buffers and output are not used:
 
 ```text
-buffer/images/ui-test/<session>/          Decoded images
-buffer/voiceovers/ui-test/<session>/      Original voice recording
-output/ui-test/<session>/<run>.mp4        Completed videos
-temp/ui-test/<session>/<run>/             Transcript, plan, captions, logs, report
+temp/ui-test/<session>/images/               Decoded test images
+temp/ui-test/<session>/voiceovers/           Uploaded test voice
+temp/ui-test/<session>/runs/<run>/video.mp4   Test video
+temp/ui-test/<session>/runs/<run>/            Transcript, plan, captions, logs, report
 ```
+
+For files left by older versions, stop the old server and move the legacy
+`buffer/images/ui-test/`, `buffer/voiceovers/ui-test/` and `output/ui-test/` folders
+into separate `images/`, `voiceovers/` and `output/` folders under
+`temp/legacy-ui-test/`. Updating Git does not move those ignored local files.
 
 These files are already covered by the repository's Git ignore rules. Test files
 remain on disk until you remove them. The UI only removes files selected with its
 remove buttons. Refreshing the page restores the session while the server is
 running. Restarting the server creates a new session; old outputs remain on disk.
 The preview and download refer to the most recent run; earlier runs remain in the
-output folder. The UI is a local developer tool and should not be exposed through
+temporary session directory. The UI is a local developer tool and should not be exposed through
 a public proxy or deployed.
 
 Run the UI integration tests separately from the production tests:

@@ -48,6 +48,9 @@ enqueue can run while an existing snapshot renders.
 one music track per reel from `composition.music_directory`, using the footage
 seed when supplied. The configured film overlay is a separate local video input.
 Asset presence is checked before transcription; FFmpeg validates media content.
+The dev tool stores all test uploads, videos and diagnostics in per-session
+directories under `paths.temp/ui-test/`. It does not use production voice/image
+buffers or the production output directory.
 
 Still-image segments use 3% overscan and shallow sinusoidal offsets with 2.4-second
 horizontal and 3.2-second vertical cycles. These shorter cycles increase shake

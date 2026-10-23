@@ -1,6 +1,6 @@
 """Serve a local testing UI without loading production jobs or publishers.
 
-Uploads are written into unique folders under the configured media buffers.
+Uploads, outputs and diagnostics stay under the configured temporary directory.
 Sessions live in memory; files and render diagnostics remain on disk for review.
 Only one render runs at a time. Each run freezes its session's inputs until the
 worker finishes, including cancellation. The launcher binds to loopback only.
@@ -64,9 +64,13 @@ class Session:
         self.uploading = False
         self.stop = threading.Event()
         self.thread = None
-        self.image_dir = Path(config["paths"]["image_buffer"]) / "ui-test" / self.id
-        self.audio_dir = Path(config["paths"]["buffer"]) / "ui-test" / self.id
+        self.directory = Path(config["paths"]["temp"]).resolve() / "ui-test" / self.id
+        self.image_dir = self.directory / "images"
+        self.audio_dir = self.directory / "voiceovers"
         self.run = None
+
+    def run_directory(self, run_id):
+        return self.directory / "runs" / run_id
 
     @property
     def active(self):
@@ -121,7 +125,7 @@ def create_app(config=None):
 
     @app.middleware("http")
     async def local_requests(request, call_next):
-        # A custom header prevents cross-origin forms from writing to local buffers.
+        # A custom header prevents cross-origin forms from writing to temporary sessions.
         if request.method in {"POST", "DELETE"}:
             origin = request.headers.get("origin")
             expected = f"{request.url.scheme}://{request.headers.get('host')}"
@@ -192,7 +196,7 @@ def create_app(config=None):
         with session.lock:
             session.available()
             if kind == "image" and len(session.images) >= 10:
-                raise HTTPException(400, "The image buffer can hold up to 10 images.")
+                raise HTTPException(400, "A test session can hold up to 10 images.")
             session.uploading = True
         media_id = uuid.uuid4().hex
         folder = session.image_dir if kind == "image" else session.audio_dir
@@ -286,8 +290,8 @@ def create_app(config=None):
         return session.snapshot()
 
     def worker(session, options, run_config, run_id):
-        work = Path(config["paths"]["temp"]) / "ui-test" / session.id / run_id
-        output = Path(config["paths"]["output"]) / "ui-test" / session.id / f"{run_id}.mp4"
+        work = session.run_directory(run_id)
+        output = work / "video.mp4"
         try:
             work.mkdir(parents=True, exist_ok=True)
             audio = media_path(session, session.audio)
@@ -420,7 +424,7 @@ def create_app(config=None):
         with session.lock:
             if not session.run or session.run["id"] != run_id or not session.run["video"]:
                 raise HTTPException(404, "No completed video for this test.")
-            path = Path(config["paths"]["output"]) / "ui-test" / session.id / f"{run_id}.mp4"
+            path = session.run_directory(run_id) / "video.mp4"
             return FileResponse(
                 path, media_type="video/mp4", filename="video-test.mp4" if download else None
             )

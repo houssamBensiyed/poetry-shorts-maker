@@ -144,7 +144,7 @@
                   <span class="requirement">3–10 images required</span>
                 </div>
                 <p class="card-description">
-                  Images are saved to the buffer as soon as you upload them.
+                  Images are saved to temporary storage as soon as you upload them.
                 </p>
                 <input
                   type="file"
@@ -166,11 +166,11 @@
                 <div
                   id="image-grid"
                   class="image-grid"
-                  aria-label="Buffered images"
+                  aria-label="Test session images"
                 ></div>
                 <div class="buffer-line">
                   <svg><use href="#i-folder" /></svg
-                  ><code>buffer/images/ui-test/</code
+                  ><code>temp/ui-test/…/images/</code
                   ><span id="image-status">Waiting for images</span>
                 </div>
               </section>
@@ -224,7 +224,7 @@
                 </div>
                 <div class="buffer-line">
                   <svg><use href="#i-folder" /></svg
-                  ><code>buffer/voiceovers/ui-test/</code
+                  ><code>temp/ui-test/…/voiceovers/</code
                   ><span id="audio-status">Waiting for voice</span>
                 </div>
               </section>
@@ -281,7 +281,7 @@
                   /></label>
                   <p class="field-help">
                     The same seed and inputs give the same image selection. The
-                    core planner selects images from the buffer; a run may not
+                    core planner selects images from this test session; a run may not
                     use every image.
                   </p>
                 </details>
@@ -402,10 +402,10 @@
               <div class="checklist">
                 <h3>Before you run</h3>
                 <div id="check-images">
-                  <span></span>At least 3 images in the buffer
+                  <span></span>At least 3 images in this test session
                 </div>
                 <div id="check-audio">
-                  <span></span>One voice recording in the buffer
+                  <span></span>One voice recording in this test session
                 </div>
                 <div id="check-speech"><span></span>Whisper API configured</div>
                 <div id="check-tools">
@@ -415,7 +415,7 @@
               <div class="output-note">
                 <svg><use href="#i-folder" /></svg>
                 <p>
-                  Finished videos are saved in<br /><code>output/ui-test/</code>
+                  Test files are saved in<br /><code>temp/ui-test/</code>
                 </p>
               </div>
             </aside>
@@ -431,7 +431,7 @@
     </div>
     <div id="upload-notice" class="upload-notice" role="status" hidden>
       <span class="spinner"></span
-      ><span id="upload-message">Saving files to buffer…</span>
+      ><span id="upload-message">Saving test files to temporary storage…</span>
     </div>
   </body>
 </html>
