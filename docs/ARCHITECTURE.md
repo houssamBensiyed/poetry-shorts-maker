@@ -13,6 +13,7 @@ publication are independent optional adapters.
 | `Dashboard` | Explicit local/Baserow source selection and empty-buffer feedback |
 | `BufferRunner` | Render one buffered voice; save event and consume source on success |
 | `MediaPipeline.run_local()` | Probe audio, transcribe, plan, resolve local media and render |
+| `video_builder.render()` | Move still images, compose film overlay/captions and mix gained voice/music |
 | `bootstrap.build_services()` | Compose the local default without Baserow or Cloudinary |
 | `BufferAutomations` | Optional empty-queue refill and completion-event delivery |
 | `JobTable` / `Uploader` | Provider-specific HTTP requests, authentication and upload confirmation |
@@ -63,6 +64,34 @@ A saved rendered receipt can finish interrupted removal without re-rendering.
 Receipt replacement is atomic for readers, not a transaction against power loss.
 The queue's metadata lock and the scheduling lock serve different purposes;
 enqueue can run while an existing snapshot renders.
+
+## Render composition
+
+`video_builder.render()` is shared by the buffer worker and the dev tool. It picks
+one music track per reel from `composition.music_directory`, using the footage
+seed when supplied. The configured film overlay is a separate local video input.
+Asset presence is checked before transcription; FFmpeg validates media content.
+The dev tool stores all test uploads, videos and diagnostics in per-session
+directories under `paths.temp/ui-test/`. It does not use production voice/image
+buffers or the production output directory.
+
+Still-image segments use 3% overscan and shallow sinusoidal offsets with 2.4-second
+horizontal and 3.2-second vertical cycles. These shorter cycles increase shake
+speed while keeping the existing travel distance and overscan. Processing RGB
+at twice the output size allows finer crop steps without chroma-grid jumps.
+Motion phase follows the global timeline across cuts;
+existing video sources retain their own motion.
+
+Source-image RGB values are multiplied by 0.8 after motion processing. The final
+pass loops/scales the overlay, blends RGB channels using difference at 70% opacity,
+then draws captions at their original brightness. It mixes the original voice at
++3.4 dB with the chosen track
+at −12.0 dB, without amix normalization. Mono voice is duplicated into stereo
+without implicit pan attenuation; overlay audio is never mapped. Output duration
+is bounded by the voice timeline, including when either asset is shorter.
+`composition.json` records asset choices and fixed effects for diagnosis. The dev
+tool includes that record in its run report and checks asset readiness before a
+run. Rendering remains independent of provider ingestion/publication.
 
 ```mermaid
 sequenceDiagram
@@ -145,15 +174,15 @@ arrives at that boundary. Status reporting failures remain outside media policy.
 ## Development checks
 
 ```sh
-.venv/bin/ruff check app tests api.py main.py
-.venv/bin/ruff format --check app tests api.py main.py
+.venv/bin/ruff check app tests devtools/video_test api.py main.py
+.venv/bin/ruff format --check app tests devtools/video_test api.py main.py
 .venv/bin/mypy
-.venv/bin/python -m pytest -q
+node --check devtools/video_test/static/app.js
+.venv/bin/python -m pytest -q tests devtools/video_test/tests
 ```
 
 Core interface type checks cover the modules listed in pyproject.toml. Tests use
 real local media and FFmpeg, with external provider responses mocked. Architecture
 tests guard the default composition and core against Baserow/Cloudinary imports.
-The buffer workflow change passed 152 tests and the listed lint, formatting and
-type checks on Python 3.13. `docker compose config --quiet` also passed; actual
-container startup and live provider processing remain outside that validation.
+Core and dev-tool suites verify real media composition, queue recovery and provider
+isolation. Container startup and live provider processing need separate validation.

@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
+MUSIC_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac", ".opus"}
 DEFAULTS = {
     "baserow": {
         "api_url": "https://api.baserow.io",
@@ -54,6 +55,10 @@ DEFAULTS = {
         "minimum_words_for_new_clip": 3,
         "avoid_immediate_repetition": True,
         "random_seed": None,
+    },
+    "composition": {
+        "music_directory": "assets/music",
+        "overlay_file": "assets/overlays/Authentic vintage film grain overlay nostalgic to any project, creating retro cinematic effects.mp4",
     },
     "captions": {
         "font_name": "Special Elite",
@@ -113,6 +118,7 @@ def load_config(path=None):
         config[section].update(values)
     for section, keys in [
         ("captions", ["font_file"]),
+        ("composition", ["music_directory", "overlay_file"]),
         ("paths", ["output", "temp", "logs", "buffer", "image_buffer"]),
     ]:
         for key in keys:
@@ -300,10 +306,31 @@ def check_upload_config(c):
 
 
 def check_render_config(c):
-    """Require the configured font file before expensive media work starts.
+    """Require the font, music pool and overlay before expensive media work starts.
 
     This checks file presence, leaving font decoding to Pillow/libass and encoder
     availability to the renderer. Raise ValueError when the file is missing.
     """
     if not Path(c["captions"]["font_file"]).is_file():
         raise ValueError("Special Elite font is missing; see README font instructions")
+    check_composition_config(c)
+
+
+def music_candidates(c):
+    """Return local background tracks in a stable order, without selecting one."""
+    directory = Path(c["composition"]["music_directory"])
+    candidates = sorted(
+        path
+        for path in directory.glob("*")
+        if path.is_file() and path.suffix.lower() in MUSIC_EXTENSIONS
+    )
+    if not candidates:
+        raise ValueError("Music asset directory is empty; add a background audio track")
+    return candidates
+
+
+def check_composition_config(c):
+    """Check composition asset presence; FFmpeg validates actual media on render."""
+    music_candidates(c)
+    if not Path(c["composition"]["overlay_file"]).is_file():
+        raise ValueError("Film overlay asset is missing; check composition.overlay_file")

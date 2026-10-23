@@ -1,8 +1,7 @@
 # Video Builder Test
 
-A local testing UI for the real video builder. Kept on the `test/video-builder-ui`
-branch, under `devtools/`; it is not included in the production Docker image and
-is not loaded by `main.py` or `api.py`.
+A local testing UI for the real video builder, under `devtools/`. It is not
+included in the production Docker image and is not loaded by `main.py` or `api.py`.
 
 From the repository root, with the project's existing Python dependencies and
 FFmpeg/FFprobe installed:
@@ -16,8 +15,8 @@ No Node build, new runtime dependency, Baserow or Cloudinary setup is needed.
 The launcher only listens on your own computer.
 
 1. Upload 3–10 JPG, PNG or WebP images. Each is decoded, its EXIF orientation is
-   applied, and it is saved as PNG directly in the image buffer.
-2. Upload one voice recording. It is saved unchanged in the voice buffer and
+   applied, and it is saved as PNG in the temporary session directory.
+2. Upload one voice recording. It is saved unchanged in the temporary session and
    checked with the project's FFprobe helper. You can listen to it in the UI.
 3. Choose fast preview or the full video size from `config.yaml`.
 4. Click **Run test**. Whisper transcribes the voice, then the builder creates the video.
@@ -26,7 +25,17 @@ The launcher only listens on your own computer.
 Use **Play with sound** under the video to start playback with sound enabled and
 volume at 100%. The label below it shows the current mute/volume state. The native
 video controls can still change the volume. This only controls browser playback;
-the downloaded MP4 contains the original voice encoded by the core renderer.
+the downloaded MP4 contains the voice at +3.4 dB mixed with music at −12.0 dB.
+
+The shared renderer automatically picks one track from `assets/music/`, loops the
+film overlay from `assets/overlays/` using difference blending at 70% opacity over
+images at 80% brightness, and adds gentle, shallow motion to still images.
+Its 2.4/3.2-second cycles increase shake speed while
+keeping image movement small. No extra uploads are required. Music and overlay
+paths come from `composition` in `config.yaml`; missing assets block the test
+before transcription. Overlay audio is excluded and captions are applied after
+blending. The selection seed reproduces both image planning and music choice.
+The downloadable run report records the chosen assets and composition settings.
 
 Every run uses the project's `Transcriber` and the `whisper` settings in
 `config.yaml`. Set the API endpoint and model there, and put the configured API
@@ -41,7 +50,7 @@ and timestamps control the captions and image changes. A transcription error fai
 the test before rendering; no sample text or estimated timing is substituted.
 The transcript is saved as `transcript.json` in the run's temporary folder.
 With the default configuration, sentences of at least three words trigger image
-changes. The core planner selects from the image buffer, so a run may not use every
+changes. The core planner selects from the test session’s images, so a run may not use every
 image. The seed makes that selection repeatable.
 
 The UI calls `Transcriber.transcribe()`, `sentences_from_words()`, `build_plan()` and
@@ -57,21 +66,27 @@ Only one test runs at a time across browser sessions. Uploads and removals are
 blocked while that session is rendering. **Stop test** requests cancellation of
 FFmpeg; the UI waits for the worker to finish before allowing edits.
 
-Files use unique session and run folders under the configured paths:
+All uploads, generated videos and diagnostics use unique session/run folders under
+`paths.temp` (normally `temp/`). Production buffers and output are not used:
 
 ```text
-buffer/images/ui-test/<session>/          Decoded images
-buffer/voiceovers/ui-test/<session>/      Original voice recording
-output/ui-test/<session>/<run>.mp4        Completed videos
-temp/ui-test/<session>/<run>/             Transcript, plan, captions, logs, report
+temp/ui-test/<session>/images/               Decoded test images
+temp/ui-test/<session>/voiceovers/           Uploaded test voice
+temp/ui-test/<session>/runs/<run>/video.mp4   Test video
+temp/ui-test/<session>/runs/<run>/            Transcript, plan, captions, logs, report
 ```
+
+For files left by older versions, stop the old server and move the legacy
+`buffer/images/ui-test/`, `buffer/voiceovers/ui-test/` and `output/ui-test/` folders
+into separate `images/`, `voiceovers/` and `output/` folders under
+`temp/legacy-ui-test/`. Updating Git does not move those ignored local files.
 
 These files are already covered by the repository's Git ignore rules. Test files
 remain on disk until you remove them. The UI only removes files selected with its
 remove buttons. Refreshing the page restores the session while the server is
 running. Restarting the server creates a new session; old outputs remain on disk.
 The preview and download refer to the most recent run; earlier runs remain in the
-output folder. The UI is a local developer tool and should not be exposed through
+temporary session directory. The UI is a local developer tool and should not be exposed through
 a public proxy or deployed.
 
 Run the UI integration tests separately from the production tests:
@@ -83,4 +98,4 @@ Run the UI integration tests separately from the production tests:
 node --check devtools/video_test/static/app.js
 ```
 
-Keep this testing work on its dedicated branch; do not merge it into `main`.
+CI runs this suite alongside the core tests so renderer changes also validate the UI.

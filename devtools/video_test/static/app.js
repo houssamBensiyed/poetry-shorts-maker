@@ -96,7 +96,7 @@ async function api(path, options = {}) {
 function updateChecks() {
   const imagesReady = session.images.length >= 3 && session.images.length <= 10;
   const audioReady = Boolean(session.audio);
-  const toolsReady = info?.ffmpeg && info?.font;
+  const toolsReady = info?.ffmpeg && info?.font && info?.assets;
   for (const [id, ready] of [
     ["check-images", imagesReady],
     ["step-images", imagesReady],
@@ -134,13 +134,13 @@ function updateChecks() {
     ? "Run again"
     : "Run test";
   $("run-hint").textContent = active()
-    ? "Building from the files in your buffer."
+    ? "Building from the files in your test session."
     : busy
-      ? "Saving your files to the buffer…"
+      ? "Saving your test files to temporary storage…"
       : !connected
         ? "Reconnect to the test server to continue."
         : !toolsReady
-          ? "FFmpeg and the caption font are required."
+          ? info?.assets_error || "FFmpeg and the caption font are required."
           : !imagesReady || !audioReady
             ? "Add 3–10 images and a voice recording."
             : !info?.speech
@@ -152,7 +152,7 @@ function updateChecks() {
 function renderMedia() {
   $("image-count").textContent = `${session.images.length} / 10`;
   $("image-status").textContent = session.images.length
-    ? `${session.images.length} saved to buffer`
+    ? `${session.images.length} saved to temporary storage`
     : "Waiting for images";
   $("image-status").classList.toggle("saved", session.images.length > 0);
   const nextImageKey = session.images.map((item) => item.id).join(",");
@@ -190,7 +190,7 @@ function renderMedia() {
     if (session.audio) {
       $("audio-name").textContent = session.audio.name;
       $("audio-details").textContent =
-        `${duration(session.audio.duration)} · ${bytes(session.audio.bytes)} · Saved to buffer`;
+        `${duration(session.audio.duration)} · ${bytes(session.audio.bytes)} · Saved to temporary storage`;
       $("audio-player").src = `${base()}/media/${session.audio.id}`;
     } else {
       $("audio-player").pause();
@@ -201,7 +201,7 @@ function renderMedia() {
   $("audio-file").hidden = !session.audio;
   $("audio-drop").hidden = Boolean(session.audio);
   $("audio-status").textContent = session.audio
-    ? "Saved to buffer"
+    ? "Saved to temporary storage"
     : "Waiting for voice";
   $("audio-status").classList.toggle("saved", Boolean(session.audio));
 }

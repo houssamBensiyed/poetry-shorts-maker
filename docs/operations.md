@@ -23,8 +23,9 @@ a successful no-op without provider validation.
 
 Optional `python -m app.automations --watch` imports direct HTTP(S) audio links
 from Baserow only when the local queue is empty, and seeds an empty image pool.
-Provider downloads reject incomplete files, login pages and invalid media. Nested
-legacy and test-tool buffer directories are not added to the numbered queue.
+Provider downloads reject incomplete files, login pages and invalid media. The dev
+tool keeps all test uploads, rendered videos and diagnostics under `temp/ui-test/`.
+Nested legacy buffer directories are not added to the numbered queue.
 See [the local quick start](../README.md#local-quick-start).
 
 ## Transcription provider
@@ -71,6 +72,8 @@ Edit existing values in [`config.yaml`](../config.yaml). Restart the dashboard o
 | `footage.minimum_words_for_new_clip` | Minimum sentence length for an image change; default 3 |
 | `footage.avoid_immediate_repetition` | Avoid choosing the same image consecutively when possible |
 | `footage.random_seed` | Integer for reproducible plans, or `null` for randomness |
+| `composition.music_directory` | Local background music pool; one random track per reel |
+| `composition.overlay_file` | Local film-grain video blended using difference |
 | `captions.position` | `top`, `center` or `bottom` |
 | `captions.font_size` / `captions.safe_margin` | Caption size and distance from video edges |
 | `captions.max_words_per_line` | Caption line wrapping |
@@ -93,6 +96,16 @@ Do not commit `.env` or include it in shared logs. Signed input URLs may appear 
 Punctuation groups timestamped words across transcription segments. A long punctuated sentence stays intact. Text without sentence-ending punctuation is split every 20 words. This is a punctuation heuristic, so abbreviations can cause extra breaks.
 
 The first image begins at zero. Sentences meeting the word threshold start a new image selection; shorter sentences retain the current image. Images are scaled and center-cropped while preserving aspect ratio. Shared frame boundaries avoid gaps, and the output duration matches the voiceover within one frame.
+
+Still images use a small overscan and gentle, moderately paced shaking without exposed
+borders. Source images are reduced to 80% brightness before overlay composition.
+The renderer selects one music track for the reel, applies −12.0 dB to
+music and +3.4 dB to voice, and mixes without automatic normalization. Mono voices
+are centered in stereo without implicit pan attenuation. The film overlay loops
+with difference blending at 70% opacity before captions; its soundtrack is
+excluded. Short
+music/overlay assets loop, and composition stops at the voice timeline. Asset
+choices and settings are recorded in retained `composition.json` diagnostics.
 
 Caption layout reserves space for the entire sentence before revealing words at their timestamps. Words do not shift as new words appear. The completed sentence remains through silence until the next sentence begins; the final caption persists until the audio ends. Before the first word and for silence-only audio, captions can be absent.
 

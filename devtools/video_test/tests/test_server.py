@@ -1,4 +1,4 @@
-"""Exercise buffer writes and real rendering through the developer HTTP API."""
+"""Exercise temporary session uploads and real rendering through the developer API."""
 
 import io
 import json
@@ -62,10 +62,10 @@ def audio_bytes():
     return data.getvalue()
 
 
-def assert_voice_preserved(source, output):
-    """Check decoded sound, so an AAC track containing silence cannot pass."""
+def assert_voice_and_music_mixed(source, output, music):
+    """Compare decoded samples against the requested voice/music mix, not just metadata."""
 
-    def decode(path):
+    def decode(path, duration=None):
         result = subprocess.run(
             [
                 "ffmpeg",
@@ -73,8 +73,11 @@ def assert_voice_preserved(source, output):
                 "error",
                 "-i",
                 str(path),
+                *(["-t", str(duration)] if duration is not None else []),
                 "-map",
                 "0:a:0",
+                "-af",
+                "pan=mono|c0=c0",
                 "-ac",
                 "1",
                 "-ar",
@@ -92,11 +95,17 @@ def assert_voice_preserved(source, output):
     assert abs(len(original) - len(rendered)) <= 1024
     length = min(len(original), len(rendered))
     original, rendered = original[:length], rendered[:length]
-    original_rms = np.sqrt(np.mean(original**2))
-    rendered_rms = np.sqrt(np.mean(rendered**2))
-    assert original_rms > 0.05, "The input fixture must contain audible sound"
-    assert 0.9 < rendered_rms / original_rms < 1.1, "The voice level must be preserved"
-    assert np.corrcoef(original, rendered)[0, 1] > 0.98, "The output must carry the uploaded audio"
+    soundtrack = decode(music, duration=length / 16000)[:length]
+    voice_gain, music_gain = 10 ** (3.4 / 20), 10 ** (-12.0 / 20)
+    expected = original * voice_gain + soundtrack * music_gain
+    assert np.sqrt(np.mean(original**2)) > 0.05, "The input must contain audible sound"
+    assert np.corrcoef(expected, rendered)[0, 1] > 0.98, "The output must carry the requested mix"
+    error = np.sqrt(np.mean((rendered - expected) ** 2)) / np.sqrt(np.mean(expected**2))
+    assert error < 0.06, "AAC output must preserve the requested voice/music gains"
+    recovered_gain = np.dot(original, rendered - soundtrack * music_gain) / np.dot(
+        original, original
+    )
+    assert recovered_gain == pytest.approx(voice_gain, rel=0.05)
 
 
 @pytest.fixture
@@ -111,6 +120,18 @@ def client(tmp_path, monkeypatch):
         model="whisper-test",
         api_key_env="VIDEO_TEST_WHISPER_KEY",
     )
+    # Every operation, including full renders and failed uploads, must preserve
+    # production inputs and output directories exactly as they were.
+    production = {}
+    for key, name, content in [
+        ("buffer", "voice-000001.wav", audio_bytes()),
+        ("image_buffer", "production.png", image_bytes()),
+        ("output", "production.mp4", b"existing production video"),
+    ]:
+        directory = Path(config["paths"][key])
+        directory.mkdir()
+        (directory / name).write_bytes(content)
+        production[key] = {name: content}
     monkeypatch.setenv("VIDEO_TEST_WHISPER_KEY", "test-only")
     requests = []
     response = {"status": 200, "body": PAYLOAD}
@@ -135,6 +156,17 @@ def client(tmp_path, monkeypatch):
         client.whisper_response = response
         client.config = config
         yield client
+    for key, expected in production.items():
+        directory = Path(config["paths"][key])
+        actual = {
+            str(p.relative_to(directory)): p.read_bytes()
+            for p in directory.rglob("*")
+            if p.is_file()
+        }
+        assert actual == expected, f"Dev tool changed the production {key} directory"
+        assert {str(p.relative_to(directory)) for p in directory.rglob("*")} == set(expected), (
+            f"Dev tool created extra directories in the production {key} folder"
+        )
 
 
 def session(client):
@@ -169,6 +201,10 @@ def wait(client, base):
 def test_static_and_local_request_guard(client):
     page = client.get("/")
     assert page.status_code == 200 and "Video Builder Test" in page.text
+    assert "temp/ui-test/" in page.text
+    assert (
+        "buffer/images/ui-test/" not in page.text and "buffer/voiceovers/ui-test/" not in page.text
+    )
     assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
     assert client.get("/app.js").status_code == 200
     assert client.get("/style.css").status_code == 200
@@ -181,11 +217,12 @@ def test_static_and_local_request_guard(client):
     assert client.get("/.env").status_code == 404
 
 
-def test_uploads_are_buffered_and_isolated(client):
+def test_uploads_stay_in_temp_and_sessions_are_isolated(client):
     base, other = session(client), session(client)
     data = fill(client, base)
-    image_folder = Path(client.config["paths"]["image_buffer"]) / "ui-test" / data["id"]
-    audio_folder = Path(client.config["paths"]["buffer"]) / "ui-test" / data["id"]
+    temporary = Path(client.config["paths"]["temp"]) / "ui-test" / data["id"]
+    image_folder = temporary / "images"
+    audio_folder = temporary / "voiceovers"
     assert len(list(image_folder.glob("*.png"))) == 3
     assert (audio_folder / data["audio"]["file"]).read_bytes() == audio_bytes()
     image_id = data["images"][0]["id"]
@@ -202,6 +239,16 @@ def test_uploads_are_buffered_and_isolated(client):
     assert len(list(audio_folder.glob("*.wav"))) == 1
 
 
+def test_test_uploads_do_not_create_missing_production_directories(client, tmp_path):
+    config = {**client.config, "paths": {**client.config["paths"]}}
+    production = tmp_path / "unused-production"
+    for key in ("buffer", "image_buffer", "output"):
+        config["paths"][key] = str(production / key)
+    with TestClient(create_app(config), headers=HEADERS) as isolated:
+        fill(isolated, session(isolated))
+    assert not production.exists(), "UI uploads must only create temporary session directories"
+
+
 def test_invalid_uploads_and_image_count(client, monkeypatch):
     base = session(client)
     for kind in ["image", "audio"]:
@@ -211,7 +258,7 @@ def test_invalid_uploads_and_image_count(client, monkeypatch):
     for _ in range(10):
         assert client.post(f"{base}/media/image", content=image_bytes()).status_code == 201
     assert client.post(f"{base}/media/image", content=image_bytes()).status_code == 400
-    assert not list(Path(client.config["paths"]["image_buffer"]).rglob("*.upload"))
+    assert not list(Path(client.config["paths"]["temp"]).rglob("*.upload"))
     assert not client.get(base).json()["uploading"]
     other = session(client)
     monkeypatch.setattr("devtools.video_test.server.IMAGE_LIMIT", 10)
@@ -236,18 +283,21 @@ def test_real_render_from_buffer_and_video_download(client):
         'filename="video-test.mp4"'
         in client.get(video_url + "?download=true").headers["content-disposition"]
     )
-    output = Path(client.config["paths"]["output"]) / "ui-test" / state["id"] / f"{run['id']}.mp4"
+    temporary = Path(client.config["paths"]["temp"]) / "ui-test" / state["id"]
+    output = temporary / "runs" / run["id"] / "video.mp4"
     details = probe(output)
     streams = {item["codec_type"]: item for item in details["streams"]}
     assert streams["video"]["codec_name"] == "h264"
     assert streams["audio"]["codec_name"] == "aac"
     assert (streams["video"]["width"], streams["video"]["height"]) == (180, 320)
     assert abs(float(details["format"]["duration"]) - 2) < 0.05
-    voice = (
-        Path(client.config["paths"]["buffer"]) / "ui-test" / state["id"] / original["audio"]["file"]
-    )
-    assert_voice_preserved(voice, output)
-    work = Path(client.config["paths"]["temp"]) / "ui-test" / state["id"] / run["id"]
+    voice = temporary / "voiceovers" / original["audio"]["file"]
+    composition = run["composition"]
+    assert composition["voice_gain_db"] == 3.4 and composition["music_gain_db"] == -12.0
+    assert composition["blend_mode"] == "difference"
+    assert composition["image_brightness"] == 0.8 and composition["overlay_opacity"] == 0.7
+    assert_voice_and_music_mixed(voice, output, composition["music"])
+    work = temporary / "runs" / run["id"]
     plan = json.loads((work / "plan.json").read_text())
     assert len(plan["footage"]) == 3 and len(plan["captions"]) == 3
     words = [word for caption in plan["captions"] for word in caption["sentence"]["words"]]
@@ -267,7 +317,8 @@ def test_real_render_from_buffer_and_video_download(client):
     assert client.post(f"{base}/run", json={"size": "preview"}).status_code == 202
     second = wait(client, base)["run"]
     assert second["status"] == "passed" and (second["width"], second["height"]) == (360, 640)
-    assert_voice_preserved(voice, output.with_name(f"{second['id']}.mp4"))
+    second_output = temporary / "runs" / second["id"] / "video.mp4"
+    assert_voice_and_music_mixed(voice, second_output, second["composition"]["music"])
     assert output.is_file()
 
 
@@ -347,6 +398,21 @@ def test_transcription_failure_does_not_render_or_substitute_text(client, monkey
     assert run["status"] == "failed" and "HTTP 401" in run["error"]
     assert not run["video"]
     assert "Building video" not in [event["message"] for event in run["events"]]
+
+
+@pytest.mark.parametrize("missing", ["music_directory", "overlay_file"])
+def test_missing_composition_assets_block_before_transcription(client, tmp_path, missing):
+    config = client.config.copy()
+    config["composition"] = {**config["composition"], missing: str(tmp_path / "missing")}
+    with TestClient(create_app(config), headers=HEADERS) as unconfigured:
+        base = session(unconfigured)
+        fill(unconfigured, base)
+        info = unconfigured.get("/api/info").json()
+        assert not info["assets"] and info["assets_error"]
+        response = unconfigured.post(f"{base}/run", json={})
+        assert response.status_code == 400 and info["assets_error"] in response.json()["detail"]
+        assert unconfigured.get(base).json()["run"] is None
+    assert not client.whisper_requests
 
 
 def test_stop_during_transcription_prevents_render(client, monkeypatch):
