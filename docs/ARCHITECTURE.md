@@ -8,7 +8,7 @@ publication are independent optional adapters.
 | Component | Responsibility |
 | --- | --- |
 | `VoiceBuffer` in `app/buffer.py` | Strict numbering, atomic enqueue, source metadata and completion outbox |
-| `LocalImages` | Reusable local image candidates |
+| `LocalImages` in `app/images.py` | Read shared assets from `composition.images_directory` (default `assets/images`) |
 | `Processor` | Sequential scheduling, cancellation, shared lock and observable counts |
 | `Dashboard` | Explicit local/Baserow source selection and empty-buffer feedback |
 | `BufferRunner` | Render one buffered voice; save event and consume source on success |
@@ -51,7 +51,7 @@ empty no-ops for polling.
    lock serializes allocation; a persistent high-water mark prevents ID reuse.
    Incomplete copies are hidden and never become queued inputs.
 2. Processor snapshots numbered voices in numeric order, under its run lock.
-3. Local image candidates are snapshotted once. The timeline planner selects
+3. Shared image assets are snapshotted once from `composition.images_directory`. The timeline planner selects
    random images at eligible sentence boundaries; it never queries a sheet.
 4. `run_local` operates on the existing voice path and creates a validated MP4
    with the same voice ID. It never downloads the voice or publishes the result.
@@ -72,8 +72,8 @@ one music track per reel from `composition.music_directory`, using the footage
 seed when supplied. The configured film overlay is a separate local video input.
 Asset presence is checked before transcription; FFmpeg validates media content.
 The dev tool stores all test uploads, videos and diagnostics in per-session
-directories under `paths.temp/ui-test/`. It does not use production voice/image
-buffers or the production output directory.
+directories under `paths.temp/ui-test/`. It does not change the production voice
+buffer, shared image assets or production output directory.
 
 Still-image segments use 3% overscan and shallow sinusoidal offsets with 2.4-second
 horizontal and 3.2-second vertical cycles. These shorter cycles increase shake
@@ -122,8 +122,8 @@ sequenceDiagram
 `python -m app.automations --watch` polls every five seconds. It does not render.
 Refill returns immediately for a nonempty voice queue without constructing a
 Baserow adapter. When empty, it imports pending rows, validates downloaded audio,
-seeds images if necessary, and enqueues numbered voices with opaque origin
-metadata. Origins preserve server, table, internal row ID and display label.
+and enqueues numbered voices with opaque origin metadata. Images are project
+assets; ingestion never downloads or modifies them and needs no image table. Origins preserve server, table, internal row ID and display label.
 Retained mappings prevent reimport while the sheet awaits its final update.
 
 Voice identity and provider identity remain separate:
@@ -163,7 +163,9 @@ completion does not call the remote repository update contract.
 
 `MediaPipeline.run()` and `JobRunner` retain the explicit remote-first injected
 workflow for existing callers/tests; they are not selected by main.py, api.py or
-the buffer CLI. The default path calls `run_local()` and `BufferRunner`.
+the buffer CLI. Downloaded image intermediates for that legacy path live under
+the attempt’s temporary work directory, never in the buffer or shared assets.
+The default path calls `run_local()` and `BufferRunner`.
 `VideoPublisher` remains the upload boundary. Add providers in the optional
 adapter layer rather than teaching the local worker about remote table schemas.
 

@@ -57,6 +57,7 @@ DEFAULTS = {
         "random_seed": None,
     },
     "composition": {
+        "images_directory": "assets/images",
         "music_directory": "assets/music",
         "overlay_file": "assets/overlays/Authentic vintage film grain overlay nostalgic to any project, creating retro cinematic effects.mp4",
     },
@@ -78,7 +79,6 @@ DEFAULTS = {
         "temp": "temp",
         "logs": "logs",
         "buffer": "buffer/voiceovers",
-        "image_buffer": "buffer/images",
     },
     "server": {"host": "127.0.0.1", "port": 8000},
 }
@@ -118,8 +118,8 @@ def load_config(path=None):
         config[section].update(values)
     for section, keys in [
         ("captions", ["font_file"]),
-        ("composition", ["music_directory", "overlay_file"]),
-        ("paths", ["output", "temp", "logs", "buffer", "image_buffer"]),
+        ("composition", ["images_directory", "music_directory", "overlay_file"]),
+        ("paths", ["output", "temp", "logs", "buffer"]),
     ]:
         for key in keys:
             if not isinstance(config[section][key], str) or not config[section][key].strip():

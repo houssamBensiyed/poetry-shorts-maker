@@ -16,10 +16,10 @@ from app.timeline import Word
 
 def setup(tmp_path):
     config = load_config()
-    config["baserow"].update(table_id=51, images_table_id=52)
+    config["composition"]["images_directory"] = str(tmp_path / "assets" / "images")
+    config["baserow"].update(table_id=51, images_table_id=0)
     config["paths"].update(
         buffer=str(tmp_path / "voices"),
-        image_buffer=str(tmp_path / "images"),
         temp=str(tmp_path / "temp"),
         output=str(tmp_path / "output"),
     )
@@ -224,7 +224,7 @@ def test_refill_render_and_delivery_preserve_mapping_and_prevent_duplicate_inges
     updates = []
     table = SimpleNamespace(
         jobs=lambda: [Job(92, "duplicate-label", file_server[0] + "/file", "NOT_PROCESSED")],
-        image_urls=lambda: [file_server[0] + "/image1"],
+        image_urls=lambda: pytest.fail("Voice import must never fetch image assets"),
         update=lambda job, status, **values: updates.append((job.row, status, values)),
     )
     uploads = []
@@ -246,9 +246,12 @@ def test_refill_render_and_delivery_preserve_mapping_and_prevent_duplicate_inges
     assert service.refill() == 1
     voice = next(Path(config["paths"]["buffer"]).glob("voice-*.audio"))
     assert voice.name == "voice-000001.audio" and voice.read_bytes() == file_server[1]
-    image = next(Path(config["paths"]["image_buffer"]).glob("*.png"))
-    with Image.open(image) as pixels:
-        assert pixels.size == (160, 120)
+    image_dir = Path(config["composition"]["images_directory"])
+    assert not image_dir.exists(), "Voice import must work without an image pool or image table"
+    image_dir.mkdir(parents=True)
+    image = image_dir / "shared.png"
+    Image.new("RGB", (160, 120), "blue").save(image)
+    original_image = image.read_bytes()
     assert service.refill() == 0
     processor = Processor(config)
     try:
@@ -259,6 +262,7 @@ def test_refill_render_and_delivery_preserve_mapping_and_prevent_duplicate_inges
     finally:
         processor.close()
     assert not voice.exists() and updates == [] and uploads == []
+    assert image.read_bytes() == original_image
     assert service.refill() == 0, (
         "Unchanged remote NOT_PROCESSED must not requeue a completed voice"
     )

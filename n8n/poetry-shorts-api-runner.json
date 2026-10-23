@@ -254,7 +254,7 @@
     },
     {
       "parameters": {
-        "content": "## The complete engine runs in Python\nJob repository → audio buffer → timestamped transcription → footage plan → selected image buffer → ASS captions → FFmpeg render → Cloudinary upload → DONE / recovery.\n\nImport **poetry-shorts-visual-demo.json** to inspect those stages separately with sample data. The public API exposes only `/run` and `/status`; individual media stages are not HTTP endpoints.",
+        "content": "## The complete engine runs in Python\nJob repository → audio buffer → timestamped transcription → footage plan → selected image intermediates → ASS captions → FFmpeg render → Cloudinary upload → DONE / recovery.\n\nImport **poetry-shorts-visual-demo.json** to inspect those stages separately with sample data. The public API exposes only `/run` and `/status`; individual media stages are not HTTP endpoints.",
         "width": 1150,
         "height": 300,
         "color": 4

@@ -10,16 +10,14 @@ import json
 import logging
 import signal
 import tempfile
-import uuid
 from pathlib import Path
 from threading import Event
 
-from app.buffer import LocalImages, VoiceBuffer, write_json
+from app.buffer import VoiceBuffer, write_json
 from app.cancellation import check_cancel
 from app.config import check_upload_config, load_config
 from app.downloads import Downloader
 from app.footage import audio_duration
-from app.images import download_images
 from app.jobs import JobTable
 from app.models import Job
 from app.state import RunLock
@@ -106,22 +104,6 @@ class BufferAutomations:
         ]
         if not jobs:
             return 0
-        images = Path(self.config["paths"]["image_buffer"])
-        images.mkdir(parents=True, exist_ok=True)
-        try:
-            LocalImages(images).sources()
-        except ValueError:
-            if not source["images_table_id"] or source["images_table_id"] == source["table_id"]:
-                raise ValueError(
-                    "An empty image buffer needs a distinct Baserow images_table_id"
-                ) from None
-            with tempfile.TemporaryDirectory(prefix=".refill-", dir=images) as staging:
-                selected = download_images(
-                    table.image_urls(), Path(staging), self.downloader, self.stop
-                )
-                for image in selected:
-                    path = Path(image.path)
-                    path.replace(images / (uuid.uuid4().hex + path.suffix))
         temp = Path(self.config["paths"]["temp"])
         temp.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="refill-", dir=temp) as staging:

@@ -67,7 +67,7 @@ blocked while that session is rendering. **Stop test** requests cancellation of
 FFmpeg; the UI waits for the worker to finish before allowing edits.
 
 All uploads, generated videos and diagnostics use unique session/run folders under
-`paths.temp` (normally `temp/`). Production buffers and output are not used:
+`paths.temp` (normally `temp/`). The production voice buffer, shared image assets and output are not changed:
 
 ```text
 temp/ui-test/<session>/images/               Decoded test images

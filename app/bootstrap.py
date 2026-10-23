@@ -7,12 +7,12 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
-from app.buffer import BufferRunner, LocalImages, VoiceBuffer
+from app.buffer import BufferRunner, VoiceBuffer
 from app.config import check_render_config, check_transcription_config
 from app.contracts import ProcessingServices, Progress, Reporter
 from app.downloads import Downloader
 from app.footage import audio_duration
-from app.images import download_images
+from app.images import LocalImages, download_images
 from app.models import Transcript
 from app.pipeline import MediaPipeline
 from app.timeline import Plan, Source, build_plan, sentences_from_words
@@ -113,7 +113,7 @@ def build_services(config: dict[str, Any]) -> ProcessingServices:
     return ProcessingServices(
         identity=buffer.identity,
         repository=lambda stop: buffer,
-        catalog=lambda stop: LocalImages(config["paths"]["image_buffer"]),
+        catalog=lambda stop: LocalImages(config["composition"]["images_directory"]),
         executor=executor,
         validate=lambda: None,
     )

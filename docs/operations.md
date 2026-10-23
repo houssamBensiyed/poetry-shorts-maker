@@ -7,7 +7,7 @@
 ## File links and buffers
 
 The default worker reads local `voice-NNNNNN.ext` files from `buffer/voiceovers/`
-and still images directly from `buffer/images/`. Use `python -m app.buffer add
+and still images directly from `assets/images/`. Use `python -m app.buffer add
 /path/to/audio.wav` to copy a complete voice into the next available number.
 Selection is random during planning; images are retained. An empty voice queue is
 a successful no-op without provider validation.
@@ -16,13 +16,13 @@ a successful no-op without provider validation.
 | --- | --- |
 | `buffer/voiceovers/voice-*.ext` | Removed only after a successful render and saved receipt |
 | `buffer/voiceovers/.queue/` | Retain sequence, source mappings and completion/delivery receipts |
-| `buffer/images/` | Reusable local images |
+| `assets/images/` | Reusable local images |
 | `output/voice-*.mp4` | Finished reels; retained independently of upload success |
 | `temp/voice-*/` | Successful work is cleaned; failed work remains for diagnosis |
 | `logs/` | Rotating logs |
 
 Optional `python -m app.automations --watch` imports direct HTTP(S) audio links
-from Baserow only when the local queue is empty, and seeds an empty image pool.
+from Baserow only when the local queue is empty. It does not download images.
 Provider downloads reject incomplete files, login pages and invalid media. The dev
 tool keeps all test uploads, rendered videos and diagnostics under `temp/ui-test/`.
 Nested legacy buffer directories are not added to the numbered queue.
@@ -58,7 +58,7 @@ Edit existing values in [`config.yaml`](../config.yaml). Restart the dashboard o
 | --- | --- |
 | `baserow.api_url` | Baserow server root, such as `https://api.baserow.io`; self-hosted HTTPS servers are supported |
 | `baserow.table_id` | Audio-job table ID, not a database or view ID |
-| `baserow.images_table_id` | A distinct image table ID |
+| `baserow.images_table_id` | Legacy remote-first integrations only; unused by the worker and voice import |
 | `downloads.timeout_seconds` | Per-request download timeout, default 60 seconds |
 | `downloads.max_file_mb` | Maximum source download size, default 256 MB |
 | `cloudinary.cloud_name` | Cloudinary account cloud name |
@@ -78,10 +78,11 @@ Edit existing values in [`config.yaml`](../config.yaml). Restart the dashboard o
 | `captions.font_size` / `captions.safe_margin` | Caption size and distance from video edges |
 | `captions.max_words_per_line` | Caption line wrapping |
 | `captions.color` / `captions.outline_color` / `captions.outline_width` | Caption colors and outline |
-| `paths.buffer` / `paths.image_buffer` | Audio and image buffer directories |
+| `paths.buffer` | Numbered audio queue directory |
+| `composition.images_directory` | Shared still-image pool, default `assets/images`; retained across reels |
 | `paths.output` / `paths.temp` / `paths.logs` | Output, working files and log directories |
 
-Paths resolve relative to `config.yaml`. Compose persists the default buffer/output/temp/logs locations and mounts `config.yaml` read-only. If you move paths outside those locations, update the Compose mounts too.
+Paths resolve relative to `config.yaml`. Compose persists the default buffer/output/temp/logs locations and mounts `config.yaml` and `assets/images` read-only. If you move paths outside those locations, update the Compose mounts too.
 
 ### Credentials and uploads
 
@@ -221,7 +222,7 @@ older mappings; restore the original configuration before delivering them.
 | --- | --- |
 | Baserow reports an error | Numeric table IDs, exact field names, token permissions and server URL |
 | No jobs run | Check numbered local voices; optional refill imports rows with `NOT_PROCESSED` |
-| No usable images | Put still image files directly in buffer/images; table settings apply only to optional refill |
+| No usable images | Put still image files in composition.images_directory (default assets/images); voice remains queued on failure |
 | Audio or image download fails | Link expiry, login/preview pages, file size and supported media format |
 | Transcription fails | Exact endpoint and model, API key, account access and timestamp support |
 | Cloudinary upload fails | Cloud name, API key/secret, account limits and saved upload checkpoints |

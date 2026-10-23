@@ -15,9 +15,9 @@ from app.timeline import Word
 
 def local_config(tmp_path):
     config = load_config()
+    config["composition"]["images_directory"] = str(tmp_path / "assets" / "images")
     config["paths"].update(
         buffer=str(tmp_path / "voices"),
-        image_buffer=str(tmp_path / "images"),
         temp=str(tmp_path / "temp"),
         output=str(tmp_path / "output"),
     )
@@ -61,8 +61,8 @@ def test_local_voices_render_and_are_consumed_without_table_or_publisher(
     monkeypatch.setattr(
         "app.bootstrap.Transcriber", lambda config: SimpleNamespace(transcribe=transcribe)
     )
-    image_dir = Path(config["paths"]["image_buffer"])
-    image_dir.mkdir()
+    image_dir = Path(config["composition"]["images_directory"])
+    image_dir.mkdir(parents=True)
     for n, color in enumerate(("blue", "red", "green")):
         Image.new("RGB", (160, 120), color).save(image_dir / f"image-{n}.png")
     source = tmp_path / "recording.wav"
@@ -87,3 +87,32 @@ def test_local_voices_render_and_are_consumed_without_table_or_publisher(
     run_processor(config)
     assert len(seen) == 2, "Restart must not rerender consumed voices"
     assert buffer.add(source).name == "voice-000003.wav"
+
+
+def test_missing_shared_images_keeps_voice_and_never_falls_back_to_providers(
+    monkeypatch, tmp_path, file_server
+):
+    config = local_config(tmp_path)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Missing assets must not trigger remote import or transcription")
+
+    monkeypatch.setattr("app.jobs.JobTable.__init__", forbidden)
+    monkeypatch.setattr("app.uploads.Uploader.__init__", forbidden)
+    monkeypatch.setattr("app.bootstrap.Transcriber", forbidden)
+    source = tmp_path / "recording.wav"
+    source.write_bytes(file_server[1])
+    buffer = VoiceBuffer(config["paths"]["buffer"])
+    voice = buffer.add(source)
+    processor = Processor(config)
+    try:
+        assert processor.start()
+        processor.thread.join(timeout=10)
+        assert not processor.active
+        assert processor.status()["status"] == "error"
+        assert "composition.images_directory" in processor.status()["error"]
+        assert voice.read_bytes() == file_server[1]
+        assert buffer.events() == []
+        assert not Path(config["composition"]["images_directory"]).exists()
+    finally:
+        processor.close()

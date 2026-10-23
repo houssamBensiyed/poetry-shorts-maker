@@ -111,6 +111,7 @@ def assert_voice_and_music_mixed(source, output, music):
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     config = load_config()
+    config["composition"]["images_directory"] = str(tmp_path / "assets" / "images")
     for key in config["paths"]:
         config["paths"][key] = str(tmp_path / key)
     config["video"].update(width=180, height=320, fps=20, preset="ultrafast")
@@ -123,13 +124,14 @@ def client(tmp_path, monkeypatch):
     # Every operation, including full renders and failed uploads, must preserve
     # production inputs and output directories exactly as they were.
     production = {}
+    production_paths = {**config["paths"], "images": config["composition"]["images_directory"]}
     for key, name, content in [
         ("buffer", "voice-000001.wav", audio_bytes()),
-        ("image_buffer", "production.png", image_bytes()),
+        ("images", "production.png", image_bytes()),
         ("output", "production.mp4", b"existing production video"),
     ]:
-        directory = Path(config["paths"][key])
-        directory.mkdir()
+        directory = Path(production_paths[key])
+        directory.mkdir(parents=True)
         (directory / name).write_bytes(content)
         production[key] = {name: content}
     monkeypatch.setenv("VIDEO_TEST_WHISPER_KEY", "test-only")
@@ -157,7 +159,7 @@ def client(tmp_path, monkeypatch):
         client.config = config
         yield client
     for key, expected in production.items():
-        directory = Path(config["paths"][key])
+        directory = Path(production_paths[key])
         actual = {
             str(p.relative_to(directory)): p.read_bytes()
             for p in directory.rglob("*")
@@ -242,8 +244,12 @@ def test_uploads_stay_in_temp_and_sessions_are_isolated(client):
 def test_test_uploads_do_not_create_missing_production_directories(client, tmp_path):
     config = {**client.config, "paths": {**client.config["paths"]}}
     production = tmp_path / "unused-production"
-    for key in ("buffer", "image_buffer", "output"):
+    for key in ("buffer", "output"):
         config["paths"][key] = str(production / key)
+    config["composition"] = {
+        **config["composition"],
+        "images_directory": str(production / "images"),
+    }
     with TestClient(create_app(config), headers=HEADERS) as isolated:
         fill(isolated, session(isolated))
     assert not production.exists(), "UI uploads must only create temporary session directories"

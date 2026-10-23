@@ -22,7 +22,7 @@ RUN --mount=type=secret,id=build_ca_bundle \
 
 RUN groupadd --gid 1000 builder \
     && useradd --uid 1000 --gid builder --create-home builder \
-    && mkdir -p /app/buffer/voiceovers /app/buffer/images \
+    && mkdir -p /app/buffer/voiceovers /app/assets/images \
         /app/output /app/temp /app/logs /tmp/poetry-video-builder-locks \
     && chown -R builder:builder /app \
     && chmod 1777 /tmp/poetry-video-builder-locks

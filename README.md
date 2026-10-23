@@ -8,7 +8,7 @@ publication are optional automations running separately.
 flowchart LR
     Files[Local audio files] --> Queue[Numbered voice buffer]
     Queue --> Worker[Transcribe, plan, render]
-    Images[Reusable image buffer] --> Worker
+    Images[Shared image assets] --> Worker
     Worker --> Video[Validated MP4]
     Video --> Consume[Save completion event, remove voice]
     Baserow[Baserow refill automation] -. only when queue is empty .-> Queue
@@ -24,10 +24,19 @@ The font, background music and film overlay are included under `assets/`.
 ```sh
 python3.13 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
-mkdir -p buffer/images
+mkdir -p assets/images
 ```
 
-Copy still JPG, PNG, WebP or BMP images directly into `buffer/images/`.
+Copy still JPG, PNG, WebP or BMP images directly into `assets/images/`.
+This shared pool is configured by `composition.images_directory` in `config.yaml`.
+The planner randomly selects from it for each reel; images are never consumed.
+Only audio is queued in the buffer.
+
+When upgrading, move your existing still images from `buffer/images/` into
+`assets/images/` (preserve any same-name files). Git does not relocate ignored
+local media on other machines. Keep old UI test resources in `temp/`, outside
+this shared pool. In custom YAML files, replace `paths.image_buffer` with
+`composition.images_directory`.
 Enqueue a voice with automatic, persistent numbering:
 
 ```sh
@@ -81,7 +90,10 @@ buffer/
   voiceovers/
     voice-000001.wav       # Pending voice; consumed after rendering
     .queue/               # Persistent numbering, mappings and completion events
-  images/                 # Reusable still images
+assets/
+  images/                 # Shared still images, randomly selected and retained
+  music/                  # Background music pool
+  overlays/               # Film overlay
 output/
   voice-000001.mp4         # Finished reel with the same voice ID
 temp/
@@ -135,20 +147,19 @@ and refills from Baserow only when there are no pending local voices. Start the
 local worker separately (use its `--watch` mode for unattended processing).
 
 For refill, configure `baserow.table_id` and supply `BASEROW_API_TOKEN` securely.
-Set a distinct `baserow.images_table_id` if an empty local image pool should be
-filled from Baserow. For publication, configure `cloudinary.cloud_name` and supply
+Images always come from the configured local assets; voice import never fetches
+or changes them. For publication, configure `cloudinary.cloud_name` and supply
 `CLOUDINARY_API_KEY` and the actual `CLOUDINARY_API_SECRET` securely. Cloudinary
 signing happens locally. Source/transcription media hosts must be reachable.
 Baserow ingestion needs no Cloudinary credentials; publication is independent.
 
 The audio table needs editable columns `ID`, `Audio URL`, `Status`, `Output File`,
-`Output URL`, and `Error`. Ready rows use `NOT_PROCESSED`. The separate image table
-needs `Image URL`. Use a Baserow database token with Read/Update access to audio rows
-and Read access to images. Downloads must be direct HTTP(S) media links.
+`Output URL`, and `Error`. Ready rows use `NOT_PROCESSED`. Use a Baserow database
+token with Read/Update access to audio rows. No image table is required.
+Downloads must be direct HTTP(S) media links.
 
 Refill imports pending voices into numbered files and remembers their original
-server, table and internal row ID. It fills images if the local image pool is
-empty. Local filenames never depend on editable sheet labels, and rows already
+server, table and internal row ID. Local filenames never depend on editable sheet labels, and rows already
 imported are not imported again while awaiting delivery.
 
 For example, importing internal sheet row `92` as `voice-000001.audio` produces

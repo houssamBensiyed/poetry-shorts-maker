@@ -12,6 +12,7 @@ x-common: &common
   volumes:
     - ./config.yaml:/app/config.yaml:ro
     - ./buffer:/app/buffer
+    - ./assets/images:/app/assets/images:ro
     - ./output:/app/output
     - ./temp:/app/temp
     - ./logs:/app/logs

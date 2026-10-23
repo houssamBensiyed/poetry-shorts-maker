@@ -1,7 +1,7 @@
 baserow:
   api_url: https://api.baserow.io
   table_id: 0  # Numeric table ID from your Baserow table URL/API documentation
-  images_table_id: 0  # Separate image table with an Image URL field
+  images_table_id: 0  # Legacy remote-first integrations only; unused by voice import
   api_key_env: BASEROW_API_TOKEN
 downloads:
   timeout_seconds: 60
@@ -33,6 +33,7 @@ footage:
   avoid_immediate_repetition: true
   random_seed: null
 composition:
+  images_directory: assets/images
   music_directory: assets/music
   overlay_file: assets/overlays/Authentic vintage film grain overlay nostalgic to any project, creating retro cinematic effects.mp4
 captions:
@@ -49,7 +50,6 @@ captions:
   persist_during_silence: true
 paths:
   buffer: buffer/voiceovers
-  image_buffer: buffer/images
   output: output
   temp: temp
   logs: logs

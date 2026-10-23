@@ -15,6 +15,8 @@ from app.config import load_config
         "whisper:\n  word_timestamps: false",
         "unknown: {}",
         "video: [broken",
+        "composition:\n  images_directory: null",
+        "composition:\n  images_directory: ''",
         "composition:\n  music_directory: null",
         "composition:\n  overlay_file: ''",
     ],
@@ -30,6 +32,8 @@ def test_relative_paths_and_defaults(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("{}")
     c = load_config(path)
+    assert c["composition"]["images_directory"] == str(tmp_path / "assets" / "images")
+    assert "image_buffer" not in c["paths"]
     assert c["video"]["fps"] == 30
     assert c["paths"]["output"] == str(tmp_path / "output")
     assert c["whisper"]["api_key_env"] == "WHISPER_API_KEY"

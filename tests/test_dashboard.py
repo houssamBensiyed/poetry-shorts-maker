@@ -18,9 +18,9 @@ from app.timeline import Word
 
 def local_config(tmp_path):
     config = load_config()
+    config["composition"]["images_directory"] = str(tmp_path / "assets" / "images")
     config["paths"].update(
         buffer=str(tmp_path / "voices"),
-        image_buffer=str(tmp_path / "images"),
         temp=str(tmp_path / "work"),
         output=str(tmp_path / "output"),
     )
@@ -80,8 +80,8 @@ def test_local_choice_renders_existing_voice_without_importing(tmp_path, monkeyp
         raise AssertionError("Local choice must not import from the sheet or publish")
 
     monkeypatch.setattr("app.automations.BufferAutomations.__init__", forbidden)
-    image_dir = Path(c["paths"]["image_buffer"])
-    image_dir.mkdir()
+    image_dir = Path(c["composition"]["images_directory"])
+    image_dir.mkdir(parents=True)
     Image.new("RGB", (80, 120), "blue").save(image_dir / "image.png")
     source = tmp_path / "recording.wav"
     source.write_bytes(file_server[1])
@@ -121,13 +121,13 @@ def test_selecting_baserow_imports_then_renders_in_the_same_run(tmp_path, monkey
     source = tmp_path / "remote-recording.wav"
     source.write_bytes(file_server[1])
     calls = []
+    image_dir = Path(c["composition"]["images_directory"])
+    image_dir.mkdir(parents=True)
+    Image.new("RGB", (80, 120), "blue").save(image_dir / "image.png")
 
     def refill(service):
         calls.append(service.stop)
         assert not any(job.status == "NOT_PROCESSED" for job in service.buffer.jobs())
-        image_dir = Path(c["paths"]["image_buffer"])
-        image_dir.mkdir()
-        Image.new("RGB", (80, 120), "blue").save(image_dir / "image.png")
         service.buffer.add(source)
         return 1
 

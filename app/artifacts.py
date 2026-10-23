@@ -1,9 +1,10 @@
 """Allocate per-attempt paths and persist local recovery checkpoints.
 
 Work directories contain disposable render intermediates and JSON evidence.
-Original audio, selected images and completed MP4s use separate locations so
-successful cleanup cannot remove them. JSON replacement is atomic for readers;
-it does not provide power-loss durability or a transaction with remote services.
+Original audio and completed MP4s use separate locations so successful cleanup
+cannot remove them. Downloaded image intermediates belong to temporary work.
+JSON replacement is atomic for readers; it does not provide power-loss durability
+or a transaction with remote services.
 """
 
 import json
@@ -25,7 +26,7 @@ class Workspace:
         work: Unique temporary directory for checkpoints and render intermediates.
         output: Final MP4 path retained after acknowledged completion.
         audio: Buffered original audio path retained for inspection and reuse.
-        images: Directory for this attempt's downloaded, selected still images.
+        images: Temporary directory for this attempt's downloaded still images.
     """
 
     work: Path
@@ -38,7 +39,7 @@ class Workspace:
         """Choose collision-resistant paths using the stable row ID and a UUID.
 
         Args:
-            paths: Configured temp, output, buffer and image_buffer directories.
+            paths: Configured temp, output and audio buffer directories.
             job: Repository record whose row identifies the originating job.
 
         Return a Workspace without creating directories. A fresh UUID separates
@@ -49,7 +50,7 @@ class Workspace:
             work=Path(paths["temp"]) / name,
             output=Path(paths["output"]) / f"{name}.mp4",
             audio=Path(paths["buffer"]) / f"{name}.audio",
-            images=Path(paths["image_buffer"]) / name,
+            images=Path(paths["temp"]) / name / "images",
         )
 
     @property
@@ -95,7 +96,8 @@ class Workspace:
     def clean(self) -> None:
         """Remove temporary work after DONE has been acknowledged.
 
-        Audio, images and final output live elsewhere and remain available. OSError
+        Audio and final output live elsewhere and remain available. Shared image
+        assets are never stored in work; downloaded intermediates are cleaned. OSError
         propagates for the runner to log without reversing successful completion.
         """
         shutil.rmtree(self.work)

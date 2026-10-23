@@ -70,7 +70,7 @@ def test_render_failure_or_cancellation_retains_voice_and_emits_no_event(tmp_pat
     runner = BufferRunner(
         buffer,
         SimpleNamespace(run_local=fail),
-        {"temp": str(tmp_path / "work"), "output": str(tmp_path), "image_buffer": str(tmp_path)},
+        {"temp": str(tmp_path / "work"), "output": str(tmp_path)},
         Event(),
         lambda **kwargs: None,
         lambda: None,

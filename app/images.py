@@ -1,4 +1,4 @@
-"""Buffer and decode only the still images selected by a media plan.
+"""Read shared image assets and decode downloads for optional custom pipelines.
 
 URLs and filename extensions cannot establish usable pixels. Pillow verifies and
 fully decodes each download before its path enters the resolved timeline. The
@@ -14,7 +14,27 @@ from PIL import Image, UnidentifiedImageError
 from app.cancellation import check_cancel
 from app.timeline import Source
 
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 EXTENSIONS = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "BMP": ".bmp"}
+
+
+class LocalImages:
+    """Expose reusable local images; the timeline planner randomizes selection."""
+
+    def __init__(self, directory):
+        self.directory = Path(directory)
+
+    def sources(self):
+        sources = [
+            Source(str(p.resolve()), "image")
+            for p in sorted(self.directory.glob("*"))
+            if p.suffix.lower() in IMAGE_SUFFIXES and p.is_file() and not p.is_symlink()
+        ]
+        if not sources:
+            raise ValueError(
+                "Image asset directory is empty; add still images to composition.images_directory"
+            )
+        return sources
 
 
 def download_images(urls, directory, downloader, stop):
@@ -22,7 +42,7 @@ def download_images(urls, directory, downloader, stop):
 
     Args:
         urls: Selected remote image links, possibly repeated across intervals.
-        directory: Per-attempt buffer directory, created as needed.
+        directory: Per-attempt temporary directory, created as needed.
         downloader: Adapter that writes a complete file to the requested path.
         stop: Run-level cancellation event checked before each image.
 

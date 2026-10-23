@@ -20,11 +20,9 @@ from app.artifacts import Workspace
 from app.cancellation import check_cancel
 from app.models import Job
 from app.state import RunLock
-from app.timeline import Source
 
 log = logging.getLogger("video_builder")
 VOICE_NAME = re.compile(r"voice-([0-9]{6,})\.(wav|mp3|m4a|flac|ogg|aac|opus|audio)")
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 
 def write_json(path, value):
@@ -65,7 +63,7 @@ class VoiceBuffer:
         if not self.directory.exists():
             return found
         for path in sorted(self.directory.iterdir()):
-            # Existing developer tools keep their sessions in subdirectories.
+            # Ignore metadata and nested legacy directories.
             if path.name.startswith(".") or (path.is_dir() and not path.is_symlink()):
                 continue
             match = VOICE_NAME.fullmatch(path.name)
@@ -168,23 +166,6 @@ class VoiceBuffer:
             self._consume(event)
 
 
-class LocalImages:
-    """Expose reusable local images; the timeline planner randomizes selection."""
-
-    def __init__(self, directory):
-        self.directory = Path(directory)
-
-    def sources(self):
-        sources = [
-            Source(str(p.resolve()), "image")
-            for p in sorted(self.directory.glob("*"))
-            if p.suffix.lower() in IMAGE_SUFFIXES and p.is_file() and not p.is_symlink()
-        ]
-        if not sources:
-            raise ValueError("Image buffer is empty; add still images before rendering")
-        return sources
-
-
 class BufferRunner:
     """Render local voices and consume them without a publisher or remote table."""
 
@@ -197,7 +178,7 @@ class BufferRunner:
             work=Path(self.paths["temp"]) / job.id,
             output=Path(self.paths["output"]) / (job.id + ".mp4"),
             audio=Path(job.voice_link),
-            images=Path(self.paths["image_buffer"]),
+            images=Path(self.paths["temp"]) / job.id / "images",
         )
         try:
             check_cancel(self.stop)
