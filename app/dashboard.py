@@ -90,9 +90,7 @@ class Dashboard(App):
     def on_mount(self):
         """Start 200 ms display polling and show the initial idle snapshot."""
         self.set_interval(0.2, self.refresh_display)
-        log.info(
-            "Dashboard ready. Configure Baserow settings and add footage, then Start Processing."
-        )
+        log.info("Dashboard ready. Add numbered voices and local images, then Start Processing.")
         self.refresh_display()
 
     def refresh_display(self):
@@ -161,7 +159,7 @@ class Dashboard(App):
             self.processor.refresh()
             log.info("Job counts refreshed")
         except Exception:
-            log.exception("Cannot refresh Baserow")
+            log.exception("Cannot refresh the voice buffer")
 
     def action_request_exit(self):
         """Open confirmation for active local work, or exit immediately when idle."""

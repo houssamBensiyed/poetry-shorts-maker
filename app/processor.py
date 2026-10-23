@@ -114,7 +114,7 @@ class Processor:
                 self.stop_event.clear()
                 self.update(
                     status="processing",
-                    stage="Connecting to job repository",
+                    stage="Reading job queue",
                     error="",
                     current_job=None,
                     voiceover="",

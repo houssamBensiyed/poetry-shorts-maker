@@ -8,9 +8,10 @@ from app.logger import configure
 from app.processor import Processor
 
 
-def test_dashboard_opens_and_reports_configuration_error(tmp_path):
+def test_dashboard_opens_and_empty_buffer_needs_no_provider_configuration(tmp_path):
     async def scenario():
         c = load_config()
+        c["paths"].update(buffer=str(tmp_path / "voices"), image_buffer=str(tmp_path / "images"))
         logs = configure(tmp_path)
         p = Processor(c)
         app = Dashboard(p, logs)
@@ -20,8 +21,9 @@ def test_dashboard_opens_and_reports_configuration_error(tmp_path):
             assert app.query_one("#logs", RichLog).lines
             await pilot.click("#start")
             await pilot.pause(0.5)
-            assert p.status()["status"] == "error"
-            assert "table_id" in p.status()["error"]
+            assert p.status()["status"] == "idle"
+            assert p.status()["pending"] == 0
+            assert p.status()["error"] == ""
             assert app.query_one("#start", Button).disabled is False
             await pilot.click("#exit")
         p.close()

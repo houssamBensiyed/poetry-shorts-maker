@@ -1,210 +1,136 @@
 # Architecture and extension guide
 
-[README](../README.md) · [Operations](operations.md) · [Critical code review](CODE_REVIEW.md)
-
-The application runs one sequential batch at a time. The dashboard and API use the same `Processor`. Configuration remains compatible with the existing YAML, and default behavior remains Baserow → hosted transcription → local FFmpeg → Cloudinary.
+The default video worker owns a local numbered voice queue. Remote ingestion and
+publication are independent optional adapters.
 
 ## Responsibility boundaries
 
-```mermaid
-flowchart TD
-    UI["Dashboard / HTTP API"] --> Processor
-    Bootstrap["bootstrap.py<br/>build_services + build_media_pipeline"] -.->|Constructs and configures| Services
-    Processor --> Services["ProcessingServices<br/>identity + factories + validator"]
-    Services -.->|repository factory| Repository["JobRepository"]
-    Services -.->|catalog factory| Catalog["SourceCatalog"]
-    Services -.->|executor factory| Executor["JobExecutor / JobRunner"]
-    Executor -->|Injected workflow| Media["MediaWorkflow / MediaPipeline"]
-    Executor -->|Injected publisher| Publisher["VideoPublisher"]
-    Executor -->|Per-job workspace factory| Workspace["Workspace<br/>paths + atomic checkpoints"]
-    Executor -->|Status transitions| Repository
-    Media --> Download["FileDownloader"]
-    Media --> Transcribe["SpeechTranscriber"]
-    Media --> Strategies["Duration probe + planner + source resolver"]
-    Media --> Render["Renderer callable"]
-    Media -.->|Stage and render progress| Reporter["Reporter / Processor.update"]
-    Executor -.->|Upload stage and errors| Reporter
-```
+| Component | Responsibility |
+| --- | --- |
+| `VoiceBuffer` in `app/buffer.py` | Strict numbering, atomic enqueue, source metadata and completion outbox |
+| `LocalImages` | Reusable local image candidates |
+| `Processor` | Sequential scheduling, cancellation, shared lock and observable counts |
+| `BufferRunner` | Render one buffered voice; save event and consume source on success |
+| `MediaPipeline.run_local()` | Probe audio, transcribe, plan, resolve local media and render |
+| `bootstrap.build_services()` | Compose the local default without Baserow or Cloudinary |
+| `BufferAutomations` | Optional empty-queue refill and completion-event delivery |
+| `JobTable` / `Uploader` | Provider-specific HTTP requests, authentication and upload confirmation |
 
-| Module | Responsibility | What to change here |
-| --- | --- | --- |
-| `processor.py` | Run ownership, thread lifecycle, cancellation, queue counts | Scheduling and run policy |
-| `execution.py` | One job's status transitions, upload, failure recovery | Completion and recovery policy |
-| `pipeline.py` | Download, transcription, planning, source resolution, rendering | Media stages and their ordering |
-| `bootstrap.py` | Concrete adapter selection and configuration | Provider choices and default strategies |
-| `contracts.py` | Narrow structural interfaces and factories | Contracts shared by callers and implementations |
-| `models.py`, `timeline.py` | Provider-independent values and timeline rules | Domain behavior |
-| `artifacts.py` | Workspace naming and atomic JSON replacement | Local artifact storage |
-| `cancellation.py`, `ffmpeg.py` | Cancellation and subprocess execution | Shared execution primitives |
-| `jobs.py`, `uploads.py`, `transcription.py`, `downloads.py`, `images.py` | External formats, HTTP, validation and adapter-specific retries | Provider integration details |
+The dashboard, HTTP API and buffer CLI all use the same default Processor.
+Transcription remains injectable; the default adapter uses the configured hosted
+speech API. The queue and renderer do not require a Baserow table or Cloudinary
+account. Remote provider modules are not imported by the default composition.
 
-`Processor(config)` remains supported and selects the default composition. `Processor(config, services)` accepts an explicit `ProcessingServices`. The default constructor imports the composition root lazily; injected application tests do not construct default providers.
+## Local sequence
 
-The `identity` in `ProcessingServices` defines the shared lock namespace. It must be stable across processes using the same job queue. Baserow defaults to server URL plus audio-table ID. Do not use random identities in production; tests use them for isolation.
+1. Enqueue copies an audio file to the next `voice-NNNNNN.ext` name. A metadata
+   lock serializes allocation; a persistent high-water mark prevents ID reuse.
+   Incomplete copies are hidden and never become queued inputs.
+2. Processor snapshots numbered voices in numeric order, under its run lock.
+3. Local image candidates are snapshotted once. The timeline planner selects
+   random images at eligible sentence boundaries; it never queries a sheet.
+4. `run_local` operates on the existing voice path and creates a validated MP4
+   with the same voice ID. It never downloads the voice or publishes the result.
+5. BufferRunner saves a `rendered` receipt, removes that voice, and marks the
+   receipt `consumed`. Failed rendering retains the input and emits no event.
+6. Successful temporary work is cleaned. Images, output, sequence state, source
+   metadata and events remain. An empty queue needs no provider credentials.
 
-## Successful job sequence
-
-This sequence shows the default composition after the coordinator has read the job snapshot and source pool. Providers satisfy protocols structurally; they are created by factories rather than directly by the coordinator.
+A saved rendered receipt can finish interrupted removal without re-rendering.
+Receipt replacement is atomic for readers, not a transaction against power loss.
+The queue's metadata lock and the scheduling lock serve different purposes;
+enqueue can run while an existing snapshot renders.
 
 ```mermaid
 sequenceDiagram
-    participant Processor
-    participant Runner as JobRunner
-    participant Repo as JobRepository
-    participant Work as Workspace
-    participant Media as MediaWorkflow
-    participant Publisher as VideoPublisher
-
-    Processor->>Runner: run(job, repository, sources)
-    Runner->>Work: prepare unique workspace
-    Runner->>Repo: update(job, PROCESSING)
-    Repo-->>Runner: acknowledged
-    Runner->>Media: run(job, workspace, sources, stop, report)
-    Note over Media,Work: Download and probe audio; transcribe and save transcript.json
-    Note over Media,Work: Plan, buffer selected images and render validated MP4
-    Media-->>Runner: media workflow finished
-    Runner->>Work: write rendered.json
-    Runner->>Publisher: public_id(output)
-    Publisher-->>Runner: intended remote identifier
-    Runner->>Work: write upload.json
-    Runner->>Publisher: upload(output, progress)
-    Publisher-->>Runner: confirmed UploadResult
-    Runner->>Work: write uploaded.json
-    Note over Runner,Repo: A Stop received with the final upload response does not cancel the DONE update
-    Runner->>Repo: update(job, DONE, output, uploaded_url)
-    Repo-->>Runner: acknowledged
-    Runner->>Work: clean temporary workspace
-    Runner-->>Processor: True
-    Note over Processor: Increment completed count; continue unless stopped
+    participant Queue as Voice buffer
+    participant Worker as Local worker
+    participant Events as Completion outbox
+    participant Listener as Optional automation
+    participant Cloud as Cloudinary
+    participant Sheet as Baserow
+    Worker->>Queue: Read next numbered voice
+    Worker->>Worker: Transcribe, select local images, render validated MP4
+    Worker->>Events: Save rendered receipt with voice ID and output
+    Worker->>Queue: Remove successfully rendered voice
+    Worker->>Events: Mark receipt consumed
+    opt Automation enabled and origin mapping present
+        Listener->>Events: Read consumed event and original row mapping
+        Listener->>Cloud: Upload completed MP4
+        Cloud-->>Listener: Confirm public URL, ID and bytes
+        Listener->>Listener: Persist confirmed upload
+        Listener->>Sheet: Write URL and DONE to original row
+        Sheet-->>Listener: Acknowledge update
+        Listener->>Listener: Mark delivery done
+    end
 ```
 
-On a per-job exception, `JobRunner` independently attempts `failure.json` and, if `PROCESSING` was acknowledged, a `FAILED` update. It returns `False` so the coordinator can count the failure and continue. A cancellation sets the shared event, which prevents the next job from starting. Failure to remove successful temporary work is logged and still returns success. Full recovery rules appear [below](#recovery-and-cancellation-contracts).
+## Optional automation sequence
 
-## SOLID choices
+`python -m app.automations --watch` polls every five seconds. It does not render.
+Refill returns immediately for a nonempty voice queue without constructing a
+Baserow adapter. When empty, it imports pending rows, validates downloaded audio,
+seeds images if necessary, and enqueues numbered voices with opaque origin
+metadata. Origins preserve server, table, internal row ID and display label.
+Retained mappings prevent reimport while the sheet awaits its final update.
 
-- **Single responsibility:** queue coordination, media creation, publication/recovery, and filesystem checkpoints have separate owners.
-- **Open/closed:** replace a repository, catalog, transcription provider, publisher, planner, resolver, or renderer through composition. New stages belong in `MediaPipeline` or a replacement `MediaWorkflow`; the queue need not change.
-- **Liskov substitution:** implementations must honor behavioral contracts below, especially cancellation and acknowledged completion. Structural typing alone cannot enforce those semantics.
-- **Interface segregation:** a repository does not have to provide images, and a source catalog does not have to update jobs. Baserow's adapter can serve both through the default composition.
-- **Dependency inversion:** application services consume protocols and callables. `bootstrap.py` owns concrete provider selection. Provider-independent cancellation no longer requires importing the video renderer.
+Voice identity and provider identity remain separate:
 
-There is no runtime plugin discovery or inheritance framework. Plain classes satisfying a protocol and injected functions are sufficient. Tests exercise those boundaries with in-memory adapters.
-
-## Replace the publisher
-
-Implement `VideoPublisher.public_id(path)` and `upload(path, progress)`. The identifier must be known before upload so recovery metadata can record the intended remote object. `upload` must return `UploadResult` only after validating the complete remote upload. Raise on ambiguous completion and preserve the identifier for manual reconciliation.
-
-The following composition helper accepts a publisher factory and its credential validator. It retains the default media pipeline and repository without constructing a Cloudinary uploader:
-
-```python
-from copy import deepcopy
-from dataclasses import replace
-from functools import partial
-
-from app.artifacts import Workspace
-from app.bootstrap import build_media_pipeline, build_services
-from app.config import (
-    check_render_config,
-    check_source_config,
-    check_transcription_config,
-)
-from app.execution import JobRunner
-from app.processor import Processor
-
-
-def processor_with_publisher(config, publisher_factory, validate_publisher):
-    config = deepcopy(config)
-    services = build_services(config)
-
-    def validate():
-        check_source_config(config)
-        check_transcription_config(config)
-        check_render_config(config)
-        validate_publisher()
-
-    def executor(stop, report):
-        return JobRunner(
-            media=build_media_pipeline(config, stop),
-            publisher=publisher_factory(stop),
-            workspace=partial(Workspace.for_job, config["paths"]),
-            stop=stop,
-            report=report,
-        )
-
-    return Processor(config, replace(services, executor=executor, validate=validate))
-```
-
-Inject the resulting processor into `create_app(processor=processor)` or `Dashboard(processor, live_logs)`. Validate only the providers actually selected. Adding custom YAML sections also requires extending `DEFAULTS` and `validate_config`; unknown keys deliberately fail early.
-
-## Other feature changes
-
-| Feature | Extension point | Behavioral constraint |
+| Value | Example | Used for |
 | --- | --- | --- |
-| Another job store | `ProcessingServices.repository` and `identity` | Stable job IDs; updates address the original record |
-| Local or remote media catalog | `ProcessingServices.catalog` | Return `Source` values; supply a resolver compatible with them |
-| Another speech provider | `MediaPipeline.transcriber` | Return ordered, finite word timestamps within the audio duration |
-| New footage-selection rule | `MediaPipeline.plan` | Cover the full audio duration; preserve caption words |
-| Video backgrounds | Catalog plus `MediaPipeline.resolve` | Default resolver handles remote still images; videos need buffering, probing and validation |
-| Another encoder | `MediaPipeline.render` | Return only after a complete validated output is finalized atomically |
-| Extra media stage | `MediaPipeline.run` or another `MediaWorkflow` | Check cancellation before expensive work and retain diagnostic artifacts |
-| Different caption-cut semantics | Planner plus renderer validation | Default renderer intentionally enforces the existing footage and caption invariants |
+| Local sequence / stem | `1` / `voice-000001` | Queue ordering, input, output and event names |
+| Original server and table | `https://api.baserow.io`, table `51` | Preventing delivery to a different source |
+| Original internal row ID | `92` | Addressing the sheet update after upload |
+| Editable sheet `ID` label | `poem-001` | Display metadata; never used to address writes |
 
-Use `dataclasses.replace(build_media_pipeline(config, stop), transcriber=...)` to change a media dependency. Supply an executor factory using that pipeline and adjust its validator. This does not require changes to `Processor` or `JobRunner`.
+The completion event copies the origin mapping before removing the voice, so
+publication does not need to reconstruct identity from a deleted input filename.
+Persisted state lives under `buffer/voiceovers/.queue/`: `sequence.json` reserves
+numbers, `voice-*.json` retains ingestion mappings, `completed/` holds render and
+consumption receipts, and `delivery/` holds optional upload/acknowledgement receipts.
 
-## Recovery and cancellation contracts
+The completion listener reads the outbox rather than listening to arbitrary
+filesystem unlink events. A manual deletion cannot represent a validated video.
+For mapped consumed events it checkpoints the intended upload ID, uploads,
+checkpoints the confirmed URL, then acknowledges the URL and DONE together on the
+original row. Local-only events have no remote effect. Changing the configured
+server/table cannot redirect an older completion to another sheet.
 
-1. Prepare a unique workspace and acknowledge `PROCESSING` before media work.
-2. Produce a validated MP4, record `rendered.json`, then write `upload.json` before uploading.
-3. Persist a confirmed result in `uploaded.json`, then acknowledge `DONE` in the repository.
-4. Commit an acknowledged upload even when Stop arrives with the final response. Recovery updates deliberately omit the cancelled event.
-5. On failure, independently attempt diagnostic persistence and a `FAILED` update. A diagnostic failure must not prevent recovery or later jobs.
-6. Keep complete outputs after upload or repository failure. Remove successful temporary work only after `DONE` is acknowledged.
+A failed sheet write reuses the confirmed upload. An ambiguous upload requires
+reconciliation rather than a blind retry. Per-event failures do not stop other
+events, and delivery failures do not prevent the independent refill attempt.
+See [recovery](operations.md#recovery).
 
-`Reporter` callbacks must accept keyword state updates and must not throw. The built-in reporter isolates shared-status filesystem errors. `MediaWorkflow` and renderer implementations must not raise after successfully finalizing output: the runner treats a raised media exception as incomplete work. `JobExecutor.run` returns success only for acknowledged completion and handles expected per-job failures itself; an unexpected executor exception terminates the batch visibly.
+## Extension contracts
 
-Atomic JSON replacement prevents partially written documents from being observed. It does not provide power-loss durability or an atomic transaction with either external service. See the [review](CODE_REVIEW.md#remaining-limitations-and-decisions) and [operations recovery instructions](operations.md#recovery) before adding automatic retries.
+`ProcessingServices` still accepts repository, catalog and executor factories for
+custom scheduling compositions. `Job` is the existing scheduling DTO: locally,
+`row` holds the sequence, `id` the voice stem, and `voice_link` the local path.
+The opaque origin metadata carries the separate remote row identity. Local
+completion does not call the remote repository update contract.
 
-## Source documentation
+`MediaPipeline.run()` and `JobRunner` retain the explicit remote-first injected
+workflow for existing callers/tests; they are not selected by main.py, api.py or
+the buffer CLI. The default path calls `run_local()` and `BufferRunner`.
+`VideoPublisher` remains the upload boundary. Add providers in the optional
+adapter layer rather than teaching the local worker about remote table schemas.
 
-Application docstrings describe both behavior and its purpose. Start with a module's
-docstring for its responsibility, then read the relevant class or function for its
-contract. Larger operations document inputs, returned values, side effects and
-failure/cancellation behavior; small helpers explain the specific rule they enforce.
-These are available through editor hover, `help()` and `python -m pydoc`.
-
-When changing or extending the application:
-
-- Explain why a boundary or rule exists, especially when it protects completion,
-  timing, recovery or ownership. Describe the final behavior instead of change history.
-- Document seconds versus percentages, original versus converted audio, stable row
-  IDs versus display labels, and unresolved URLs versus buffered source paths.
-- State when a function performs network/filesystem work, what it leaves behind on
-  failure, and whether an omitted stop event deliberately permits recovery writes.
-- Keep provider requirements in adapter docstrings and shared behavioral promises
-  in protocol docstrings. Structural typing checks method shapes, not those promises.
-- Distinguish validation actually performed from caller assumptions. A data-model
-  constructor does not validate its values, an HTTP acknowledgement does not prove
-  full upload completion, and an atomic rename does not guarantee power-loss durability.
-- Update the corresponding docstrings whenever behavior changes. Keep credentials,
-  private media links and live paid requests out of documentation examples.
-
-The [README source reading order](../README.md#reading-the-source) follows composition,
-coordination, job recovery and media generation. The operational recovery procedures
-remain in [operations.md](operations.md#recovery).
+Cancellation checks run before expensive stages. Once the renderer successfully
+finalizes, the local runner attempts to record and consume the voice even if stop
+arrives at that boundary. Status reporting failures remain outside media policy.
 
 ## Development checks
 
-Use Python 3.13 (the Docker runtime) or 3.14 with FFmpeg/FFprobe installed:
-
 ```sh
-python -m venv .venv
-.venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/ruff check app tests api.py main.py
 .venv/bin/ruff format --check app tests api.py main.py
 .venv/bin/mypy
 .venv/bin/python -m pytest -q
 ```
 
-On Windows use the corresponding `.venv/Scripts` executables. Tests need permission to bind a localhost HTTP server. Provider calls are mocked; rendering and local downloads are real. Never add live paid-provider calls to this suite.
-
-Mypy currently checks eight modules: contracts, models, cancellation, artifacts, pipeline, execution, processor and bootstrap. Existing adapters and dictionary-based YAML configuration are not fully typed. Expand coverage as those modules change. CI defines Python 3.13 and 3.14 jobs with formatting, lint, typing and tests; local success does not imply the hosted workflow has already run.
+Core interface type checks cover the modules listed in pyproject.toml. Tests use
+real local media and FFmpeg, with external provider responses mocked. Architecture
+tests guard the default composition and core against Baserow/Cloudinary imports.
+The buffer workflow change passed 152 tests and the listed lint, formatting and
+type checks on Python 3.13. `docker compose config --quiet` also passed; actual
+container startup and live provider processing remain outside that validation.

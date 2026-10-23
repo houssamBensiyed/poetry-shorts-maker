@@ -16,10 +16,20 @@ x-common: &common
     - ./temp:/app/temp
     - ./logs:/app/logs
     - processing-locks:/tmp/poetry-video-builder-locks
-  # Let an in-flight HTTP request reach its configured 120s timeout and recover the Baserow row.
+  # Let an in-flight transcription request reach its configured 120s timeout.
   stop_grace_period: 180s
 
 services:
+  worker:
+    <<: *common
+    profiles: [worker]
+    command: [python, -m, app.buffer, run, --watch]
+
+  automations:
+    <<: *common
+    profiles: [automations]
+    command: [python, -m, app.automations, --watch]
+
   dashboard:
     <<: *common
     profiles: [dashboard]
