@@ -103,29 +103,19 @@ function updateChecks() {
     ["check-audio", audioReady],
     ["step-audio", audioReady],
     ["check-tools", toolsReady],
+    ["check-speech", info?.speech],
     ["step-run", session.run?.status === "passed"],
   ]) {
     $(id).classList.toggle("complete", Boolean(ready));
   }
   const locked = Boolean(busy || active() || session.uploading);
   document.body.classList.toggle("busy", locked);
-  for (const id of [
-    "image-drop",
-    "audio-drop",
-    "remove-audio",
-    "size",
-    "caption-mode",
-    "caption-text",
-    "seed",
-  ])
+  for (const id of ["image-drop", "audio-drop", "remove-audio", "size", "seed"])
     $(id).disabled = locked;
   $("image-drop").disabled = locked || session.images.length >= 10;
   document
     .querySelectorAll(".remove-image")
     .forEach((button) => (button.disabled = locked));
-  const validText =
-    $("caption-mode").value !== "sample" ||
-    Boolean($("caption-text").value.trim());
   const validSeed = $("seed").validity.valid && $("seed").value !== "";
   $("run").disabled =
     locked ||
@@ -133,7 +123,7 @@ function updateChecks() {
     !imagesReady ||
     !audioReady ||
     !toolsReady ||
-    !validText ||
+    !info?.speech ||
     !validSeed;
   $("run").hidden = Boolean(active());
   $("stop").hidden = !active();
@@ -153,8 +143,8 @@ function updateChecks() {
           ? "FFmpeg and the caption font are required."
           : !imagesReady || !audioReady
             ? "Add 3–10 images and a voice recording."
-            : !validText
-              ? "Enter sample caption text to continue."
+            : !info?.speech
+              ? "Set up the Whisper API before running a test."
               : !validSeed
                 ? "Enter a valid image selection seed."
                 : "Everything is ready. Start your test.";
@@ -274,6 +264,8 @@ function renderRun() {
     }
   }
   $("video-player").hidden = !videoKey;
+  $("video-sound").hidden = !videoKey;
+  updateSoundStatus();
   $("preview-empty").hidden = Boolean(videoKey);
   $("preview-label").hidden = Boolean(videoKey);
   $("download").hidden = !videoKey;
@@ -301,6 +293,37 @@ function renderRun() {
   );
   if (run) $("video-frame").style.aspectRatio = `${run.width}/${run.height}`;
 }
+function updateSoundStatus() {
+  const player = $("video-player");
+  $("sound-status").textContent = player.muted
+    ? "Video is muted"
+    : player.volume === 0
+      ? "Video volume is 0%"
+      : `Sound on · ${Math.round(player.volume * 100)}% volume`;
+}
+
+$("video-player").addEventListener("volumechange", updateSoundStatus);
+$("video-player").addEventListener("error", () => {
+  if (videoKey)
+    showError(
+      new Error(
+        "Your browser could not play this video. Download the MP4 and try another player.",
+      ),
+    );
+});
+$("play-with-sound").addEventListener("click", async () => {
+  const player = $("video-player");
+  $("audio-player").pause();
+  player.muted = false;
+  player.volume = 1;
+  updateSoundStatus();
+  try {
+    await player.play();
+  } catch (error) {
+    showError(new Error(`Could not start video playback: ${error.message}`));
+  }
+});
+
 function render() {
   if (!session) return;
   renderMedia();
@@ -402,14 +425,7 @@ $("remove-audio").addEventListener(
   "click",
   () => session.audio && removeMedia(session.audio.id),
 );
-$("caption-mode").addEventListener("change", () => {
-  const sample = $("caption-mode").value === "sample";
-  $("sample-settings").hidden = !sample;
-  $("speech-help").hidden = sample;
-  render();
-});
-for (const id of ["caption-text", "size", "seed"])
-  $(id).addEventListener("input", render);
+for (const id of ["size", "seed"]) $(id).addEventListener("input", render);
 $("run").addEventListener("click", async () => {
   if ($("run").disabled) return;
   busy = true;
@@ -421,8 +437,6 @@ $("run").addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         size: $("size").value,
-        captions: $("caption-mode").value,
-        text: $("caption-text").value,
         seed: Number($("seed").value),
       }),
     });
@@ -447,10 +461,13 @@ async function connect() {
   info = await api("/api/info");
   $("full-size").textContent = `${info.full_size} · Full size`;
   $("size").options[0].textContent = `${info.preview_size} · Fast preview`;
-  $("speech-option").disabled = !info.speech;
-  $("speech-option").textContent = info.speech
-    ? "Speech recognition"
-    : "Speech recognition · Not set up";
+  $("speech-status").value = info.speech_model
+    ? `Whisper API · ${info.speech_model}`
+    : "Whisper API";
+  $("speech-setup").hidden = info.speech;
+  $("speech-setup").textContent = info.speech_error
+    ? `${info.speech_error}. You can put the key in the project's .env file, then restart the test server.`
+    : "";
   const saved = storage.get("video-test-session");
   if (saved && /^[a-f0-9]{32}$/.test(saved)) {
     try {

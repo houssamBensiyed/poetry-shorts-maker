@@ -1491,3 +1491,37 @@ footer {
   width: 25px;
   height: 25px;
 }
+
+/* Read-only transcription source matches the other test settings. */
+#speech-status {
+  display: block;
+  width: 100%;
+  height: 36px;
+  margin-top: 7px;
+  padding: 9px 10px;
+  border: 1px solid #dde1d5;
+  border-radius: 5px;
+  background: #f7f9f3;
+  color: #49513e;
+  font-size: 11px;
+}
+#speech-setup {
+  color: #99542f;
+}
+.video-sound {
+  margin: 0 0 16px;
+}
+.sound-button {
+  border-color: #d3ddca;
+  background: #f1f5ed;
+  color: #3c6041;
+}
+.sound-button:hover {
+  background: #e6eede;
+}
+#sound-status {
+  margin: 7px 0 0;
+  color: #6c7663;
+  text-align: center;
+  font-size: 10px;
+}

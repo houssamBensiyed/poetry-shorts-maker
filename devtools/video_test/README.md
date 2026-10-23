@@ -20,20 +20,31 @@ The launcher only listens on your own computer.
 2. Upload one voice recording. It is saved unchanged in the voice buffer and
    checked with the project's FFprobe helper. You can listen to it in the UI.
 3. Choose fast preview or the full video size from `config.yaml`.
-4. Choose caption timing and click **Run test**.
+4. Click **Run test**. Whisper transcribes the voice, then the builder creates the video.
 5. Watch progress, play/download the validated MP4, or save the JSON test report.
 
-**Sample text** works without credentials. Its words are spread evenly across the
-voice duration, so these are test timings, not a transcription of the recording.
-Edit the text to test captions. Sentences with at least three words trigger image
-changes with the default configuration. The UI uses the real `build_plan()` image
-selection, so a run may not select every buffered image. The seed makes selection
-repeatable. **Speech recognition** uses the existing configured transcription
-provider and requires its endpoint, model and environment key. The recording is
-sent to that provider, which may charge for the request. The launcher does not
-load `.env`; export credentials in your shell if using that option.
+Use **Play with sound** under the video to start playback with sound enabled and
+volume at 100%. The label below it shows the current mute/volume state. The native
+video controls can still change the volume. This only controls browser playback;
+the downloaded MP4 contains the original voice encoded by the core renderer.
 
-The UI calls `sentences_from_words()`, `build_plan()` and
+Every run uses the project's `Transcriber` and the `whisper` settings in
+`config.yaml`. Set the API endpoint and model there, and put the configured API
+key (normally `WHISPER_API_KEY`) in the project's `.env` file or export it in your
+shell. The launcher reads only that key from `.env`; exported values take priority.
+Plain and quoted values are supported, without shell commands or variable expansion.
+Restart the server after changing credentials or configuration. The UI shows missing
+settings and prevents a run until the API is configured.
+
+The uploaded voice is sent to the configured Whisper service. Its returned words
+and timestamps control the captions and image changes. A transcription error fails
+the test before rendering; no sample text or estimated timing is substituted.
+The transcript is saved as `transcript.json` in the run's temporary folder.
+With the default configuration, sentences of at least three words trigger image
+changes. The core planner selects from the image buffer, so a run may not use every
+image. The seed makes that selection repeatable.
+
+The UI calls `Transcriber.transcribe()`, `sentences_from_words()`, `build_plan()` and
 `app.video_builder.render()` directly. It checks the same timeline, caption,
 codec, audio, duration and output invariants as the core renderer. It tests local
 media preparation and rendering; production queue, remote downloads, publication
@@ -52,7 +63,7 @@ Files use unique session and run folders under the configured paths:
 buffer/images/ui-test/<session>/          Decoded images
 buffer/voiceovers/ui-test/<session>/      Original voice recording
 output/ui-test/<session>/<run>.mp4        Completed videos
-temp/ui-test/<session>/<run>/             Plans, ASS captions, FFmpeg logs, report
+temp/ui-test/<session>/<run>/             Transcript, plan, captions, logs, report
 ```
 
 These files are already covered by the repository's Git ignore rules. Test files

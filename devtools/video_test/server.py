@@ -10,12 +10,12 @@ import asyncio
 import copy
 import json
 import logging
-import os
 import shutil
 import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 from typing import Literal
 
@@ -23,13 +23,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.cancellation import Cancelled, check_cancel
-from app.config import load_config
+from app.config import check_transcription_config, load_config
 from app.footage import audio_duration
-from app.timeline import Source, Word, build_plan, sentences_from_words
+from app.timeline import Source, build_plan, sentences_from_words
 from app.transcription import Transcriber
 from app.video_builder import render
 
@@ -42,9 +42,9 @@ log = logging.getLogger(__name__)
 class RunOptions(BaseModel):
     """Bounded, per-run overrides; never write to the project's config.yaml."""
 
+    model_config = ConfigDict(extra="forbid")
+
     size: Literal["preview", "full"] = "preview"
-    captions: Literal["sample", "speech"] = "sample"
-    text: str = Field(default="", max_length=5000)
     seed: int = Field(default=42, ge=0, le=2147483647)
 
 
@@ -89,17 +89,6 @@ class Session:
             self.run["stage"] = message
             if progress is not None:
                 self.run["progress"] = progress
-
-
-def sample_words(text, duration):
-    """Use explicit test timings, not speech recognition, for offline captions."""
-    tokens = text.split()
-    if not tokens:
-        raise ValueError("Enter sample caption text or select speech recognition.")
-    if len(tokens) > 600:
-        raise ValueError("Use no more than 600 words for sample captions.")
-    step = duration / len(tokens)
-    return [Word(token, i * step, (i + 0.8) * step) for i, token in enumerate(tokens)]
 
 
 def create_app(config=None):
@@ -157,13 +146,17 @@ def create_app(config=None):
 
     @app.get("/api/info")
     def info():
-        whisper = config["whisper"]
+        speech_error = None
+        try:
+            check_transcription_config(config)
+        except ValueError as exc:
+            speech_error = str(exc)
         return {
             "ffmpeg": bool(shutil.which("ffmpeg") and shutil.which("ffprobe")),
             "font": Path(config["captions"]["font_file"]).is_file(),
-            "speech": bool(
-                whisper["api_url"] and whisper["model"] and os.getenv(whisper["api_key_env"])
-            ),
+            "speech": speech_error is None,
+            "speech_error": speech_error,
+            "speech_model": config["whisper"]["model"],
             "full_size": f"{config['video']['width']} × {config['video']['height']}",
             "preview_size": f"360 × {max(2, round(config['video']['height'] * 360 / config['video']['width'] / 2) * 2)}",
             "fps": config["video"]["fps"],
@@ -289,16 +282,14 @@ def create_app(config=None):
             duration = audio_duration(audio)
             session.event("Voice checked", 3)
             check_cancel(session.stop)
-            if options.captions == "speech":
-                session.event("Getting speech timings", 5)
-                words = (
-                    Transcriber(config["whisper"])
-                    .transcribe(audio, duration, session.stop, work)
-                    .words
-                )
-            else:
-                session.event("Creating sample caption timings", 5)
-                words = sample_words(options.text, duration)
+            session.event("Transcribing voice with Whisper", 5)
+            transcript = Transcriber(config["whisper"]).transcribe(
+                audio, duration, session.stop, work
+            )
+            check_cancel(session.stop)
+            (work / "transcript.json").write_text(json.dumps(asdict(transcript), indent=2))
+            words = transcript.words
+            session.event(f"Voice transcribed · {len(words)} words", 8)
             footage = config["footage"]
             plan = build_plan(
                 sentences_from_words(words, duration),
@@ -350,15 +341,10 @@ def create_app(config=None):
                 raise HTTPException(
                     400, "Add 3–10 images and one voice recording before running a test."
                 )
-            if options.captions == "sample":
-                try:
-                    sample_words(options.text, session.audio["duration"])
-                except ValueError as exc:
-                    raise HTTPException(400, str(exc)) from exc
-            if options.captions == "speech" and not info()["speech"]:
-                raise HTTPException(
-                    400, "Set the speech API endpoint, model and environment key first."
-                )
+            try:
+                check_transcription_config(config)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
             if not info()["ffmpeg"] or not info()["font"]:
                 raise HTTPException(
                     400, "FFmpeg, FFprobe and the configured caption font are required."

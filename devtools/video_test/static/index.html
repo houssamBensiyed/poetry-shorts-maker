@@ -247,34 +247,27 @@
                         1080 × 1920 · Full size
                       </option>
                     </select></label
-                  ><label
-                    >Caption timing<select id="caption-mode">
-                      <option value="sample">Sample text</option>
-                      <option id="speech-option" value="speech">
-                        Speech recognition
-                      </option>
-                    </select></label
                   >
+                  <label for="speech-status"
+                    >Captions
+                    <input
+                      id="speech-status"
+                      type="text"
+                      value="Whisper API"
+                      readonly
+                    />
+                  </label>
                 </div>
-                <div id="sample-settings">
-                  <label class="text-label" for="caption-text"
-                    >Sample caption text<span>Editable</span></label
-                  ><textarea id="caption-text" rows="3" maxlength="5000">
-This is the first test sentence.
-The video should show another image.
-Each word should appear in order.
-The voice should play until the end.</textarea>
-                  <p class="field-help">
-                    Words use evenly spaced test timings. They are not matched
-                    to the voice. Use sentences of 3 or more words to test image
-                    changes.
-                  </p>
-                </div>
-                <p id="speech-help" class="field-help" hidden>
-                  Uses your configured speech API to get real word timings. The
-                  recording is sent to that service and provider charges may
-                  apply.
+                <p class="field-help">
+                  Whisper transcribes your voice before the video is built.
+                  Captions use the words and timings returned by the API.
                 </p>
+                <p
+                  id="speech-setup"
+                  class="field-help"
+                  role="status"
+                  hidden
+                ></p>
                 <details class="advanced">
                   <summary>More settings</summary>
                   <label
@@ -368,6 +361,16 @@ The voice should play until the end.</textarea>
                     >VIDEO OUTPUT</span
                   >
                 </div>
+                <div id="video-sound" class="video-sound" hidden>
+                  <button
+                    id="play-with-sound"
+                    class="button sound-button"
+                    type="button"
+                  >
+                    <svg><use href="#i-audio" /></svg>Play with sound
+                  </button>
+                  <p id="sound-status" role="status" aria-live="polite"></p>
+                </div>
                 <div class="video-facts">
                   <div>
                     <span>Resolution</span
@@ -404,6 +407,7 @@ The voice should play until the end.</textarea>
                 <div id="check-audio">
                   <span></span>One voice recording in the buffer
                 </div>
+                <div id="check-speech"><span></span>Whisper API configured</div>
                 <div id="check-tools">
                   <span></span>FFmpeg and caption font ready
                 </div>

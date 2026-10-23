@@ -2,11 +2,14 @@
 
 import io
 import json
+import subprocess
 import threading
 import time
 import wave
 from pathlib import Path
 
+import httpx
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -14,10 +17,28 @@ from PIL import Image
 from app.cancellation import check_cancel
 from app.config import load_config
 from app.footage import probe
+from app.transcription import normalize_response
 from devtools.video_test.server import create_app
 
 HEADERS = {"X-Video-Test": "1"}
-TEXT = "Here comes the morning. Light moves through trees. A new day begins."
+PAYLOAD = {
+    "text": "First test sentence. Another image appears. Last words here.",
+    "words": [
+        {"word": text, "start": start, "end": start + 0.08}
+        for text, start in zip(
+            "First test sentence Another image appears Last words here".split(),
+            [0, 0.15, 0.36, 0.8, 0.96, 1.1, 1.5, 1.65, 1.81],
+            strict=True,
+        )
+    ],
+    "segments": [
+        {
+            "text": "First test sentence. Another image appears. Last words here.",
+            "start": 0,
+            "end": 1.89,
+        }
+    ],
+}
 
 
 def image_bytes(color="blue"):
@@ -28,22 +49,90 @@ def image_bytes(color="blue"):
 
 def audio_bytes():
     data = io.BytesIO()
+    clock = np.arange(32000) / 16000
+    envelope = 0.5 + 0.4 * np.sin(2 * np.pi * 3 * clock)
+    signal = envelope * (
+        0.3 * np.sin(2 * np.pi * 220 * clock) + 0.15 * np.sin(2 * np.pi * 617 * clock)
+    )
     with wave.open(data, "wb") as audio:
         audio.setnchannels(1)
         audio.setsampwidth(2)
         audio.setframerate(16000)
-        audio.writeframes(b"\0\0" * 32000)
+        audio.writeframes((signal * 32767).astype("<i2").tobytes())
     return data.getvalue()
 
 
+def assert_voice_preserved(source, output):
+    """Check decoded sound, so an AAC track containing silence cannot pass."""
+
+    def decode(path):
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                str(path),
+                "-map",
+                "0:a:0",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-f",
+                "f32le",
+                "pipe:1",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return np.frombuffer(result.stdout, dtype="<f4")
+
+    original, rendered = decode(source), decode(output)
+    assert abs(len(original) - len(rendered)) <= 1024
+    length = min(len(original), len(rendered))
+    original, rendered = original[:length], rendered[:length]
+    original_rms = np.sqrt(np.mean(original**2))
+    rendered_rms = np.sqrt(np.mean(rendered**2))
+    assert original_rms > 0.05, "The input fixture must contain audible sound"
+    assert 0.9 < rendered_rms / original_rms < 1.1, "The voice level must be preserved"
+    assert np.corrcoef(original, rendered)[0, 1] > 0.98, "The output must carry the uploaded audio"
+
+
 @pytest.fixture
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
     config = load_config()
     for key in config["paths"]:
         config["paths"][key] = str(tmp_path / key)
     config["video"].update(width=180, height=320, fps=20, preset="ultrafast")
     config["captions"].update(font_size=18, safe_margin=12)
+    config["whisper"].update(
+        api_url="https://whisper.example/v1/audio/transcriptions",
+        model="whisper-test",
+        api_key_env="VIDEO_TEST_WHISPER_KEY",
+    )
+    monkeypatch.setenv("VIDEO_TEST_WHISPER_KEY", "test-only")
+    requests = []
+    response = {"status": 200, "body": PAYLOAD}
+
+    def handle(request):
+        requests.append(request)
+        assert str(request.url) == config["whisper"]["api_url"]
+        assert request.headers["authorization"] == "Bearer test-only"
+        body = request.read()
+        assert b"whisper-test" in body and b"verbose_json" in body
+        assert b"word" in body and b"segment" in body
+        assert b"fLaC" in body, "The core transcriber must prepare actual FLAC audio"
+        return httpx.Response(response["status"], json=response["body"])
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        "app.transcription.httpx.Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handle), **kwargs),
+    )
     with TestClient(create_app(config), headers=HEADERS) as client:
+        client.whisper_requests = requests
+        client.whisper_response = response
         client.config = config
         yield client
 
@@ -118,7 +207,7 @@ def test_invalid_uploads_and_image_count(client, monkeypatch):
     for kind in ["image", "audio"]:
         assert client.post(f"{base}/media/{kind}", content=b"invalid media").status_code == 400
         assert client.post(f"{base}/media/{kind}", content=b"").status_code == 400
-    assert client.post(f"{base}/run", json={"text": TEXT}).status_code == 400
+    assert client.post(f"{base}/run", json={}).status_code == 400
     for _ in range(10):
         assert client.post(f"{base}/media/image", content=image_bytes()).status_code == 201
     assert client.post(f"{base}/media/image", content=image_bytes()).status_code == 400
@@ -133,7 +222,7 @@ def test_invalid_uploads_and_image_count(client, monkeypatch):
 def test_real_render_from_buffer_and_video_download(client):
     base = session(client)
     original = fill(client, base)
-    response = client.post(f"{base}/run", json={"size": "full", "text": TEXT, "seed": 5})
+    response = client.post(f"{base}/run", json={"size": "full", "seed": 5})
     assert response.status_code == 202, response.text
     state = wait(client, base)
     run = state["run"]
@@ -154,17 +243,31 @@ def test_real_render_from_buffer_and_video_download(client):
     assert streams["audio"]["codec_name"] == "aac"
     assert (streams["video"]["width"], streams["video"]["height"]) == (180, 320)
     assert abs(float(details["format"]["duration"]) - 2) < 0.05
+    voice = (
+        Path(client.config["paths"]["buffer"]) / "ui-test" / state["id"] / original["audio"]["file"]
+    )
+    assert_voice_preserved(voice, output)
     work = Path(client.config["paths"]["temp"]) / "ui-test" / state["id"] / run["id"]
     plan = json.loads((work / "plan.json").read_text())
     assert len(plan["footage"]) == 3 and len(plan["captions"]) == 3
+    words = [word for caption in plan["captions"] for word in caption["sentence"]["words"]]
+    assert [word["text"] for word in words] == [
+        word.text for word in normalize_response(PAYLOAD, 2).words
+    ]
+    assert [word["start"] for word in words] == [word["start"] for word in PAYLOAD["words"]]
+    assert json.loads((work / "transcript.json").read_text())["words"] == words
+    assert len(client.whisper_requests) == 1
+    messages = [event["message"] for event in run["events"]]
+    assert messages.index("Transcribing voice with Whisper") < messages.index("Building video")
     assert all("/ui-test/" in item["source"]["path"] for item in plan["footage"])
     assert json.loads((work / "test-report.json").read_text())["status"] == "passed"
     assert client.get(f"{base}/report").json()["status"] == "passed"
     assert client.get(base).json()["images"] == original["images"]
     # A second actual run uses scaled preview settings and leaves the first output intact.
-    assert client.post(f"{base}/run", json={"size": "preview", "text": TEXT}).status_code == 202
+    assert client.post(f"{base}/run", json={"size": "preview"}).status_code == 202
     second = wait(client, base)["run"]
     assert second["status"] == "passed" and (second["width"], second["height"]) == (360, 640)
+    assert_voice_preserved(voice, output.with_name(f"{second['id']}.mp4"))
     assert output.is_file()
 
 
@@ -180,10 +283,10 @@ def test_running_inputs_are_frozen_and_stop_releases_worker(client, monkeypatch)
     base, other = session(client), session(client)
     state = fill(client, base)
     fill(client, other)
-    assert client.post(f"{base}/run", json={"text": TEXT}).status_code == 202
+    assert client.post(f"{base}/run", json={}).status_code == 202
     assert started.wait(3)
-    assert client.post(f"{base}/run", json={"text": TEXT}).status_code == 409
-    assert client.post(f"{other}/run", json={"text": TEXT}).status_code == 409
+    assert client.post(f"{base}/run", json={}).status_code == 409
+    assert client.post(f"{other}/run", json={}).status_code == 409
     assert client.delete(f"{base}/media/{state['images'][0]['id']}").status_code == 409
     assert client.post(f"{base}/media/audio", content=audio_bytes()).status_code == 409
     assert client.post(f"{base}/stop").status_code == 200
@@ -195,17 +298,71 @@ def test_running_inputs_are_frozen_and_stop_releases_worker(client, monkeypatch)
 def test_invalid_settings_and_render_failure_are_visible(client, monkeypatch):
     base = session(client)
     fill(client, base)
-    assert client.post(f"{base}/run", json={"text": ""}).status_code == 400
-    assert client.post(f"{base}/run", json={"text": TEXT, "size": "huge"}).status_code == 422
-    monkeypatch.delenv(client.config["whisper"]["api_key_env"], raising=False)
-    assert client.post(f"{base}/run", json={"captions": "speech"}).status_code == 400
+    assert (
+        client.post(f"{base}/run", json={"captions": "sample", "text": "Fake"}).status_code == 422
+    )
+    assert client.post(f"{base}/run", json={"size": "huge"}).status_code == 422
 
     def fail(*args, **kwargs):
         raise RuntimeError("Test encoder failure")
 
     monkeypatch.setattr("devtools.video_test.server.render", fail)
     for _ in range(2):
-        assert client.post(f"{base}/run", json={"text": TEXT}).status_code == 202
+        assert client.post(f"{base}/run", json={}).status_code == 202
         run = wait(client, base)["run"]
         assert run["status"] == "failed" and run["error"] == "Test encoder failure"
         assert client.get(f"{base}/video/{run['id']}").status_code == 404
+
+
+@pytest.mark.parametrize("missing", ["key", "api_url", "model"])
+def test_missing_whisper_config_blocks_run(client, monkeypatch, missing):
+    config = client.config.copy()
+    config["whisper"] = config["whisper"].copy()
+    if missing == "key":
+        monkeypatch.delenv("VIDEO_TEST_WHISPER_KEY")
+    else:
+        config["whisper"][missing] = ""
+    with TestClient(create_app(config), headers=HEADERS) as unconfigured:
+        base = session(unconfigured)
+        fill(unconfigured, base)
+        info = unconfigured.get("/api/info").json()
+        assert not info["speech"] and info["speech_error"]
+        assert unconfigured.post(f"{base}/run", json={}).status_code == 400
+        assert unconfigured.get(base).json()["run"] is None
+    assert not client.whisper_requests
+
+
+def test_transcription_failure_does_not_render_or_substitute_text(client, monkeypatch):
+    base = session(client)
+    fill(client, base)
+
+    client.whisper_response["status"] = 401
+
+    def no_render(*args):
+        pytest.fail("Rendering must wait for successful transcription")
+
+    monkeypatch.setattr("devtools.video_test.server.render", no_render)
+    assert client.post(f"{base}/run", json={}).status_code == 202
+    run = wait(client, base)["run"]
+    assert run["status"] == "failed" and "HTTP 401" in run["error"]
+    assert not run["video"]
+    assert "Building video" not in [event["message"] for event in run["events"]]
+
+
+def test_stop_during_transcription_prevents_render(client, monkeypatch):
+    base = session(client)
+    fill(client, base)
+    started = threading.Event()
+
+    def transcribe(self, audio, duration, stop, work):
+        started.set()
+        assert stop.wait(5)
+        check_cancel(stop)
+
+    monkeypatch.setattr("app.transcription.Transcriber.transcribe", transcribe)
+    assert client.post(f"{base}/run", json={}).status_code == 202
+    assert started.wait(3)
+    assert client.post(f"{base}/stop").status_code == 200
+    run = wait(client, base)["run"]
+    assert run["status"] == "stopped" and not run["video"]
+    assert "Building video" not in [event["message"] for event in run["events"]]
