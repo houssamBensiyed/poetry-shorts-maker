@@ -15,6 +15,8 @@ from app.config import load_config
         "whisper:\n  word_timestamps: false",
         "unknown: {}",
         "video: [broken",
+        "composition:\n  music_directory: null",
+        "composition:\n  overlay_file: ''",
     ],
 )
 def test_invalid_configuration_has_clear_error(tmp_path, text):
@@ -32,6 +34,7 @@ def test_relative_paths_and_defaults(tmp_path):
     assert c["paths"]["output"] == str(tmp_path / "output")
     assert c["whisper"]["api_key_env"] == "WHISPER_API_KEY"
     assert c["whisper"]["api_url"] == ""
+    assert c["composition"]["music_directory"] == str(tmp_path / "assets" / "music")
 
 
 @pytest.mark.parametrize(

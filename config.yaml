@@ -32,6 +32,9 @@ footage:
   minimum_words_for_new_clip: 3
   avoid_immediate_repetition: true
   random_seed: null
+composition:
+  music_directory: assets/music
+  overlay_file: assets/overlays/Authentic vintage film grain overlay nostalgic to any project, creating retro cinematic effects.mp4
 captions:
   font_name: Special Elite
   font_file: assets/fonts/SpecialElite-Regular.ttf

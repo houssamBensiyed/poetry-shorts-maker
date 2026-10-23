@@ -1,8 +1,7 @@
 # Video Builder Test
 
-A local testing UI for the real video builder. Kept on the `test/video-builder-ui`
-branch, under `devtools/`; it is not included in the production Docker image and
-is not loaded by `main.py` or `api.py`.
+A local testing UI for the real video builder, under `devtools/`. It is not
+included in the production Docker image and is not loaded by `main.py` or `api.py`.
 
 From the repository root, with the project's existing Python dependencies and
 FFmpeg/FFprobe installed:
@@ -26,7 +25,15 @@ The launcher only listens on your own computer.
 Use **Play with sound** under the video to start playback with sound enabled and
 volume at 100%. The label below it shows the current mute/volume state. The native
 video controls can still change the volume. This only controls browser playback;
-the downloaded MP4 contains the original voice encoded by the core renderer.
+the downloaded MP4 contains the voice at +3.4 dB mixed with music at −9.0 dB.
+
+The shared renderer automatically picks one track from `assets/music/`, loops the
+film overlay from `assets/overlays/` using difference blending, and adds very slow,
+shallow motion to still images. No extra uploads are required. Music and overlay
+paths come from `composition` in `config.yaml`; missing assets block the test
+before transcription. Overlay audio is excluded and captions are applied after
+blending. The selection seed reproduces both image planning and music choice.
+The downloadable run report records the chosen assets and composition settings.
 
 Every run uses the project's `Transcriber` and the `whisper` settings in
 `config.yaml`. Set the API endpoint and model there, and put the configured API
@@ -83,4 +90,4 @@ Run the UI integration tests separately from the production tests:
 node --check devtools/video_test/static/app.js
 ```
 
-Keep this testing work on its dedicated branch; do not merge it into `main`.
+CI runs this suite alongside the core tests so renderer changes also validate the UI.

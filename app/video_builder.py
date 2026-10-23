@@ -1,7 +1,7 @@
 """Render resolved timelines into validated H.264/AAC vertical MP4s.
 
 Normalize each visual interval to a common size/rate, concatenate those segments,
-burn ASS captions with the bundled font, and mux the original voiceover. Shared
+blend the film overlay, burn ASS captions, and mix gained voice/music. Shared
 frame boundaries avoid accumulating rounding error between intervals. Only a
 probed, validated partial output is atomically renamed to the final destination.
 """
@@ -9,6 +9,7 @@ probed, validated partial output is atomically renamed to the final destination.
 import json
 import logging
 import math
+import random
 import shutil
 import threading
 from pathlib import Path
@@ -16,11 +17,30 @@ from pathlib import Path
 from app.cancellation import Cancelled as Cancelled
 from app.cancellation import check_cancel
 from app.captions import write_ass
+from app.config import check_render_config, music_candidates
 from app.ffmpeg import run_ffmpeg as run_ffmpeg
 from app.footage import probe
 from app.timeline import validate_plan
 
 log = logging.getLogger("video_builder")
+
+
+def image_motion_filter(width, height, fps, start):
+    """Use a small fixed overscan and slow sinusoidal movement without black edges.
+
+    Work at twice the output resolution for half-pixel crop steps. Three percent
+    overscan leaves room for shallow independent 14/18-second horizontal/vertical
+    cycles. Global timeline time keeps phase consistent across image cuts.
+    """
+    time = f"(on/{fps}+{start:.9f})"
+    return (
+        f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,"
+        f"crop={width * 2}:{height * 2},setsar=1,"
+        "zoompan=z=1.03:"
+        f"x='(iw-iw/zoom)/2*(1+0.35*sin(2*PI*{time}/14))':"
+        f"y='(ih-ih/zoom)/2*(1+0.35*sin(2*PI*{time}/18))':"
+        f"d=1:s={width}x{height}:fps={fps},setpts=PTS-STARTPTS"
+    )
 
 
 def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: None):
@@ -31,14 +51,18 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
         audio: Buffered original audio, used instead of the transcription FLAC.
         output: Final MP4 destination; its parent is created when needed.
         workdir: Workspace for plan.json, copied font, ASS, segments and logs.
-        config: Full config containing video, captions and footage rules.
+        config: Full config containing video, captions, footage and composition paths.
         stop: Optional cancellation event; an unset event is created if omitted.
         progress: Non-throwing callback receiving 0..100 across both render phases.
 
     Revalidate timeline invariants before encoding. Scale/crop sources to fill
     the output, loop images or short videos, and quantize shared cut boundaries
     once. Segment normalization occupies the first half of progress; caption
-    burn-in/audio muxing occupies the second half. Retain intermediates for the
+    difference blend, caption burn-in and audio mixing occupy the second half.
+    One random music track is looped/trimmed to the voice duration at -9.0 dB;
+    the buffered voice is increased by +3.4 dB, without amix normalization.
+    Overlay audio is excluded. Captions are applied after the difference blend.
+    Retain intermediates for the
     lifecycle runner to clean only after acknowledged job completion.
 
     Encode to a sibling .partial.mp4, then probe audio/video presence, H.264/AAC
@@ -61,6 +85,26 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
     fps = video["fps"]
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         raise RuntimeError("Install FFmpeg and FFprobe before rendering")
+    check_render_config(config)
+    voice_info = next(s for s in probe(audio)["streams"] if s["codec_type"] == "audio")
+    # Duplicate mono centrally without the resampler's implicit -3 dB pan law:
+    # the requested +3.4 dB gain must hold in either output channel.
+    voice_layout = "pan=stereo|c0=c0|c1=c0," if voice_info["channels"] == 1 else ""
+    music = random.Random(config["footage"]["random_seed"]).choice(music_candidates(config))
+    overlay = Path(config["composition"]["overlay_file"]).resolve()
+    (work / "composition.json").write_text(
+        json.dumps(
+            {
+                "music": str(music.resolve()),
+                "overlay": str(overlay),
+                "music_gain_db": -9.0,
+                "voice_gain_db": 3.4,
+                "blend_mode": "difference",
+                "image_motion": "slow_shake",
+            },
+            indent=2,
+        )
+    )
     (work / "plan.json").write_text(json.dumps(plan.to_dict(), indent=2))
     font = Path(config["captions"]["font_file"])
     if not font.is_file():
@@ -85,8 +129,12 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
             else ["-stream_loop", "-1", "-ss", str(interval.offset)]
         )
         vf = (
-            f"scale={video['width']}:{video['height']}:force_original_aspect_ratio=increase,"
-            f"crop={video['width']}:{video['height']},setsar=1,fps={fps},setpts=PTS-STARTPTS"
+            image_motion_filter(video["width"], video["height"], fps, start_frame / fps)
+            if source.kind == "image"
+            else (
+                f"scale={video['width']}:{video['height']}:force_original_aspect_ratio=increase,"
+                f"crop={video['width']}:{video['height']},setsar=1,fps={fps},setpts=PTS-STARTPTS"
+            )
         )
         args = inputs + [
             "-i",
@@ -126,6 +174,24 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
     (work / "concat.txt").write_text("".join(f"file '{name}'\n" for name in segments))
     partial = output.with_name(output.stem + ".partial.mp4")
     try:
+        # Blend RGB channels so difference has its usual compositing semantics.
+        # Apply captions afterwards to preserve their layout and readability.
+        filters = (
+            f"[0:v:0]setpts=PTS-STARTPTS,format=gbrp[base];"
+            f"[2:v:0]scale={video['width']}:{video['height']}:"
+            "force_original_aspect_ratio=increase,"
+            f"crop={video['width']}:{video['height']},setsar=1,fps={fps},"
+            "setpts=PTS-STARTPTS,format=gbrp[film];"
+            "[base][film]blend=all_mode=difference:shortest=1,"
+            "ass=captions.ass:fontsdir=fonts,format=yuv420p[video];"
+            "[1:a:0]asetpts=PTS-STARTPTS,volume=3.4dB,"
+            f"{voice_layout}"
+            "aformat=sample_rates=48000:channel_layouts=stereo[voice];"
+            "[3:a:0]asetpts=PTS-STARTPTS,volume=-9.0dB,"
+            "aformat=sample_rates=48000:channel_layouts=stereo[music];"
+            "[voice][music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+            f"atrim=duration={plan.duration:.9f}[audio]"
+        )
         args = [
             "-f",
             "concat",
@@ -135,12 +201,24 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
             "concat.txt",
             "-i",
             str(Path(audio).resolve()),
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(overlay),
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(music.resolve()),
+            "-filter_complex_threads",
+            "1",
+            "-filter_complex",
+            filters,
             "-map",
-            "0:v:0",
+            "[video]",
             "-map",
-            "1:a:0",
-            "-vf",
-            "ass=captions.ass:fontsdir=fonts",
+            "[audio]",
+            "-t",
+            f"{total_frames / fps:.9f}",
             "-c:v",
             "libx264",
             "-crf",
@@ -167,7 +245,7 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
             stop,
             plan.duration,
             lambda p: progress(50 + p / 2),
-            "Render captions and voiceover",
+            "Compose overlay captions and audio",
         )
         result = probe(partial)
         vs = next(s for s in result["streams"] if s["codec_type"] == "video")

@@ -62,10 +62,10 @@ def audio_bytes():
     return data.getvalue()
 
 
-def assert_voice_preserved(source, output):
-    """Check decoded sound, so an AAC track containing silence cannot pass."""
+def assert_voice_and_music_mixed(source, output, music):
+    """Compare decoded samples against the requested voice/music mix, not just metadata."""
 
-    def decode(path):
+    def decode(path, duration=None):
         result = subprocess.run(
             [
                 "ffmpeg",
@@ -73,8 +73,11 @@ def assert_voice_preserved(source, output):
                 "error",
                 "-i",
                 str(path),
+                *(["-t", str(duration)] if duration is not None else []),
                 "-map",
                 "0:a:0",
+                "-af",
+                "pan=mono|c0=c0",
                 "-ac",
                 "1",
                 "-ar",
@@ -92,11 +95,17 @@ def assert_voice_preserved(source, output):
     assert abs(len(original) - len(rendered)) <= 1024
     length = min(len(original), len(rendered))
     original, rendered = original[:length], rendered[:length]
-    original_rms = np.sqrt(np.mean(original**2))
-    rendered_rms = np.sqrt(np.mean(rendered**2))
-    assert original_rms > 0.05, "The input fixture must contain audible sound"
-    assert 0.9 < rendered_rms / original_rms < 1.1, "The voice level must be preserved"
-    assert np.corrcoef(original, rendered)[0, 1] > 0.98, "The output must carry the uploaded audio"
+    soundtrack = decode(music, duration=length / 16000)[:length]
+    voice_gain, music_gain = 10 ** (3.4 / 20), 10 ** (-9.0 / 20)
+    expected = original * voice_gain + soundtrack * music_gain
+    assert np.sqrt(np.mean(original**2)) > 0.05, "The input must contain audible sound"
+    assert np.corrcoef(expected, rendered)[0, 1] > 0.98, "The output must carry the requested mix"
+    error = np.sqrt(np.mean((rendered - expected) ** 2)) / np.sqrt(np.mean(expected**2))
+    assert error < 0.06, "AAC output must preserve the requested voice/music gains"
+    recovered_gain = np.dot(original, rendered - soundtrack * music_gain) / np.dot(
+        original, original
+    )
+    assert recovered_gain == pytest.approx(voice_gain, rel=0.05)
 
 
 @pytest.fixture
@@ -246,7 +255,10 @@ def test_real_render_from_buffer_and_video_download(client):
     voice = (
         Path(client.config["paths"]["buffer"]) / "ui-test" / state["id"] / original["audio"]["file"]
     )
-    assert_voice_preserved(voice, output)
+    composition = run["composition"]
+    assert composition["voice_gain_db"] == 3.4 and composition["music_gain_db"] == -9.0
+    assert composition["blend_mode"] == "difference"
+    assert_voice_and_music_mixed(voice, output, composition["music"])
     work = Path(client.config["paths"]["temp"]) / "ui-test" / state["id"] / run["id"]
     plan = json.loads((work / "plan.json").read_text())
     assert len(plan["footage"]) == 3 and len(plan["captions"]) == 3
@@ -267,7 +279,9 @@ def test_real_render_from_buffer_and_video_download(client):
     assert client.post(f"{base}/run", json={"size": "preview"}).status_code == 202
     second = wait(client, base)["run"]
     assert second["status"] == "passed" and (second["width"], second["height"]) == (360, 640)
-    assert_voice_preserved(voice, output.with_name(f"{second['id']}.mp4"))
+    assert_voice_and_music_mixed(
+        voice, output.with_name(f"{second['id']}.mp4"), second["composition"]["music"]
+    )
     assert output.is_file()
 
 
@@ -347,6 +361,21 @@ def test_transcription_failure_does_not_render_or_substitute_text(client, monkey
     assert run["status"] == "failed" and "HTTP 401" in run["error"]
     assert not run["video"]
     assert "Building video" not in [event["message"] for event in run["events"]]
+
+
+@pytest.mark.parametrize("missing", ["music_directory", "overlay_file"])
+def test_missing_composition_assets_block_before_transcription(client, tmp_path, missing):
+    config = client.config.copy()
+    config["composition"] = {**config["composition"], missing: str(tmp_path / "missing")}
+    with TestClient(create_app(config), headers=HEADERS) as unconfigured:
+        base = session(unconfigured)
+        fill(unconfigured, base)
+        info = unconfigured.get("/api/info").json()
+        assert not info["assets"] and info["assets_error"]
+        response = unconfigured.post(f"{base}/run", json={})
+        assert response.status_code == 400 and info["assets_error"] in response.json()["detail"]
+        assert unconfigured.get(base).json()["run"] is None
+    assert not client.whisper_requests
 
 
 def test_stop_during_transcription_prevents_render(client, monkeypatch):

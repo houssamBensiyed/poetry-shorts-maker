@@ -19,7 +19,7 @@ flowchart LR
 ## Local quick start
 
 Use Python 3.13 or 3.14 and FFmpeg/FFprobe with H.264 and libass support.
-The Special Elite font is included under `assets/fonts/`.
+The font, background music and film overlay are included under `assets/`.
 
 ```sh
 python3.13 -m venv .venv
@@ -73,6 +73,24 @@ output/
 temp/
   voice-000001/            # Per-voice working files and failure diagnostics
 ```
+
+## Video composition
+
+The renderer automatically uses the bundled assets for both normal processing
+and the dev tool. Your inputs remain a voice recording and images.
+
+- Choose one random track from `assets/music/` per reel; loop it as needed at
+  **−9.0 dB** and mix it with the original voice at **+3.4 dB**.
+- Loop the film-grain video from `assets/overlays/` over the footage with the
+  **difference** blend mode. Its audio is excluded; captions are drawn afterwards.
+- Give still images a very slow, shallow shake with a small overscan so edges
+  stay covered. The overlay and captions remain steady.
+
+Set `composition.music_directory` and `composition.overlay_file` in `config.yaml`
+to change asset locations. `footage.random_seed` also reproduces music selection.
+Gains are applied before mixing, without automatic mix normalization. Audio and
+video are trimmed to the voice timeline. `composition.json` in retained working
+files records the selected assets and mix settings; dev-tool reports include it.
 
 ## Completion and failures
 
@@ -136,7 +154,7 @@ configuration is rejected for older events, protecting against the wrong sheet.
 
 ## Docker and API
 
-The image includes Python 3.13, dependencies, FFmpeg and the font. Compose passes
+The image includes Python 3.13, dependencies, FFmpeg and the bundled assets. Compose passes
 values from `.env`; the native application does not. On Linux set `LOCAL_UID` and
 `LOCAL_GID` to your user and group IDs before starting containers.
 
@@ -157,19 +175,20 @@ See [operations](docs/operations.md) for configuration and recovery details.
 ## Development checks
 
 ```sh
-.venv/bin/ruff check app tests api.py main.py
-.venv/bin/ruff format --check app tests api.py main.py
+.venv/bin/ruff check app tests devtools/video_test api.py main.py
+.venv/bin/ruff format --check app tests devtools/video_test api.py main.py
 .venv/bin/mypy
-.venv/bin/python -m pytest -q
+node --check devtools/video_test/static/app.js
+.venv/bin/python -m pytest -q tests devtools/video_test/tests
 ```
 
 Tests exercise real FFmpeg output and local HTTP downloads, including numbered
 queue consumption, event recovery, provider isolation, upload ordering and sheet
 retry behavior. External transcription, Baserow and Cloudinary are mocked; tests
 do not establish successful paid transcription or live publication.
-The buffer workflow change passed **152 tests**, lint, formatting and the configured
-core type checks on Python 3.13. Compose configuration was validated; container
-startup and live provider processing were not exercised in that validation.
+Renderer tests measure decoded audio gains, RGB difference blending, looping and
+smooth image movement. CI includes the dev-tool suite as well as the core suite.
+Container startup and live provider processing require separate validation.
 
 See [architecture](docs/ARCHITECTURE.md) for the composition boundaries. The
 [local media test tool](devtools/video_test/README.md) remains available for manual

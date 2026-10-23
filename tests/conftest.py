@@ -1,10 +1,63 @@
 import io
+import subprocess
 import threading
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from PIL import Image
+
+
+@pytest.fixture
+def composition_assets(tmp_path):
+    """Short distinct-tone music and a gray overlay with deliberately unwanted audio."""
+    music = tmp_path / "music"
+    music.mkdir()
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=48000:duration=0.4",
+            "-ac",
+            "2",
+            str(music / "tone.wav"),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    overlay = tmp_path / "overlay with spaces.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=0x202020:s=80x120:r=20:d=0.2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=2000:sample_rate=48000:duration=0.2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(overlay),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return {"music_directory": str(music), "overlay_file": str(overlay)}
 
 
 @pytest.fixture

@@ -27,7 +27,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.cancellation import Cancelled, check_cancel
-from app.config import check_transcription_config, load_config
+from app.config import (
+    check_composition_config,
+    check_render_config,
+    check_transcription_config,
+    load_config,
+)
 from app.footage import audio_duration
 from app.timeline import Source, build_plan, sentences_from_words
 from app.transcription import Transcriber
@@ -151,9 +156,16 @@ def create_app(config=None):
             check_transcription_config(config)
         except ValueError as exc:
             speech_error = str(exc)
+        assets_error = None
+        try:
+            check_composition_config(config)
+        except ValueError as exc:
+            assets_error = str(exc)
         return {
             "ffmpeg": bool(shutil.which("ffmpeg") and shutil.which("ffprobe")),
             "font": Path(config["captions"]["font_file"]).is_file(),
+            "assets": assets_error is None,
+            "assets_error": assets_error,
             "speech": speech_error is None,
             "speech_error": speech_error,
             "speech_model": config["whisper"]["model"],
@@ -310,7 +322,11 @@ def create_app(config=None):
             session.event("Video passed the builder checks", 100)
             with session.lock:
                 session.run.update(
-                    status="passed", video=True, duration=duration, bytes=output.stat().st_size
+                    status="passed",
+                    video=True,
+                    duration=duration,
+                    bytes=output.stat().st_size,
+                    composition=json.loads((work / "composition.json").read_text()),
                 )
         except Cancelled:
             session.event("Test stopped")
@@ -343,6 +359,7 @@ def create_app(config=None):
                 )
             try:
                 check_transcription_config(config)
+                check_render_config(config)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
             if not info()["ffmpeg"] or not info()["font"]:
@@ -352,6 +369,8 @@ def create_app(config=None):
             if not render_lock.acquire(blocking=False):
                 raise HTTPException(409, "Another test is running. Wait for it to finish.")
             run_config = copy.deepcopy(config)
+            # The test seed reproduces both image selection and the music choice.
+            run_config["footage"]["random_seed"] = options.seed
             if options.size == "preview":
                 scale = 360 / config["video"]["width"]
                 height = max(2, round(config["video"]["height"] * scale / 2) * 2)

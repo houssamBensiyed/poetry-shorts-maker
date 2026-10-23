@@ -96,7 +96,7 @@ async function api(path, options = {}) {
 function updateChecks() {
   const imagesReady = session.images.length >= 3 && session.images.length <= 10;
   const audioReady = Boolean(session.audio);
-  const toolsReady = info?.ffmpeg && info?.font;
+  const toolsReady = info?.ffmpeg && info?.font && info?.assets;
   for (const [id, ready] of [
     ["check-images", imagesReady],
     ["step-images", imagesReady],
@@ -140,7 +140,7 @@ function updateChecks() {
       : !connected
         ? "Reconnect to the test server to continue."
         : !toolsReady
-          ? "FFmpeg and the caption font are required."
+          ? info?.assets_error || "FFmpeg and the caption font are required."
           : !imagesReady || !audioReady
             ? "Add 3–10 images and a voice recording."
             : !info?.speech

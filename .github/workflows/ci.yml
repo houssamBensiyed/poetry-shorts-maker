@@ -27,10 +27,12 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Lint
-        run: ruff check app tests api.py main.py
+        run: ruff check app tests devtools/video_test api.py main.py
       - name: Check formatting
-        run: ruff format --check app tests api.py main.py
+        run: ruff format --check app tests devtools/video_test api.py main.py
       - name: Check application interfaces
         run: mypy
+      - name: Check dev-tool JavaScript
+        run: node --check devtools/video_test/static/app.js
       - name: Test
-        run: python -m pytest -q
+        run: python -m pytest -q tests devtools/video_test/tests
