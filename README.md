@@ -81,8 +81,9 @@ and the dev tool. Your inputs remain a voice recording and images.
 
 - Choose one random track from `assets/music/` per reel; loop it as needed at
   **−12.0 dB** and mix it with the original voice at **+3.4 dB**.
-- Loop the film-grain video from `assets/overlays/` over the footage with the
-  **difference** blend mode. Its audio is excluded; captions are drawn afterwards.
+- Set source images to **80% brightness**, then loop the film-grain video from
+  `assets/overlays/` over the footage at **70% opacity** with the **difference**
+  blend mode. Its audio is excluded; captions are drawn afterwards.
 - Give still images a gentle, shallow shake at a moderate pace, with overscan so edges
   stay covered. The overlay and captions remain steady.
 

@@ -59,8 +59,10 @@ at twice the output size allows finer crop steps without chroma-grid jumps.
 Motion phase follows the global timeline across cuts;
 existing video sources retain their own motion.
 
-The final pass loops/scales the overlay, blends RGB channels using difference,
-then draws captions. It mixes the original voice at +3.4 dB with the chosen track
+Source-image RGB values are multiplied by 0.8 after motion processing. The final
+pass loops/scales the overlay, blends RGB channels using difference at 70% opacity,
+then draws captions at their original brightness. It mixes the original voice at
++3.4 dB with the chosen track
 at −12.0 dB, without amix normalization. Mono voice is duplicated into stereo
 without implicit pan attenuation; overlay audio is never mapped. Output duration
 is bounded by the voice timeline, including when either asset is shorter.

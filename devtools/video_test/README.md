@@ -28,8 +28,9 @@ video controls can still change the volume. This only controls browser playback;
 the downloaded MP4 contains the voice at +3.4 dB mixed with music at −12.0 dB.
 
 The shared renderer automatically picks one track from `assets/music/`, loops the
-film overlay from `assets/overlays/` using difference blending, and adds gentle,
-shallow motion to still images. Its 2.4/3.2-second cycles increase shake speed while
+film overlay from `assets/overlays/` using difference blending at 70% opacity over
+images at 80% brightness, and adds gentle, shallow motion to still images.
+Its 2.4/3.2-second cycles increase shake speed while
 keeping image movement small. No extra uploads are required. Music and overlay
 paths come from `composition` in `config.yaml`; missing assets block the test
 before transcription. Overlay audio is excluded and captions are applied after

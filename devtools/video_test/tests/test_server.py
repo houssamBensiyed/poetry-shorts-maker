@@ -295,6 +295,7 @@ def test_real_render_from_buffer_and_video_download(client):
     composition = run["composition"]
     assert composition["voice_gain_db"] == 3.4 and composition["music_gain_db"] == -12.0
     assert composition["blend_mode"] == "difference"
+    assert composition["image_brightness"] == 0.8 and composition["overlay_opacity"] == 0.7
     assert_voice_and_music_mixed(voice, output, composition["music"])
     work = temporary / "runs" / run["id"]
     plan = json.loads((work / "plan.json").read_text())

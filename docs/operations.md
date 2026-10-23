@@ -98,10 +98,12 @@ Punctuation groups timestamped words across transcription segments. A long punct
 The first image begins at zero. Sentences meeting the word threshold start a new image selection; shorter sentences retain the current image. Images are scaled and center-cropped while preserving aspect ratio. Shared frame boundaries avoid gaps, and the output duration matches the voiceover within one frame.
 
 Still images use a small overscan and gentle, moderately paced shaking without exposed
-borders. The renderer selects one music track for the reel, applies −12.0 dB to
+borders. Source images are reduced to 80% brightness before overlay composition.
+The renderer selects one music track for the reel, applies −12.0 dB to
 music and +3.4 dB to voice, and mixes without automatic normalization. Mono voices
 are centered in stereo without implicit pan attenuation. The film overlay loops
-with difference blending before captions; its soundtrack is excluded. Short
+with difference blending at 70% opacity before captions; its soundtrack is
+excluded. Short
 music/overlay assets loop, and composition stops at the voice timeline. Asset
 choices and settings are recorded in retained `composition.json` diagnostics.
 

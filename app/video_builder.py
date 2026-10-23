@@ -24,6 +24,8 @@ from app.timeline import validate_plan
 
 log = logging.getLogger("video_builder")
 MUSIC_GAIN_DB = -12.0
+IMAGE_BRIGHTNESS = 0.8
+OVERLAY_OPACITY = 0.7
 SHAKE_PERIOD_X = 2.4
 SHAKE_PERIOD_Y = 3.2
 
@@ -42,7 +44,9 @@ def image_motion_filter(width, height, fps, start):
         "zoompan=z=1.03:"
         f"x='(iw-iw/zoom)/2*(1+0.35*sin(2*PI*{time}/{SHAKE_PERIOD_X}))':"
         f"y='(ih-ih/zoom)/2*(1+0.35*sin(2*PI*{time}/{SHAKE_PERIOD_Y}))':"
-        f"d=1:s={width}x{height}:fps={fps},setpts=PTS-STARTPTS"
+        f"d=1:s={width}x{height}:fps={fps},format=gbrp,"
+        f"lutrgb=r=val*{IMAGE_BRIGHTNESS}:g=val*{IMAGE_BRIGHTNESS}:b=val*{IMAGE_BRIGHTNESS},"
+        "setpts=PTS-STARTPTS"
     )
 
 
@@ -64,7 +68,9 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
     difference blend, caption burn-in and audio mixing occupy the second half.
     One random music track is looped/trimmed to the voice duration at -12.0 dB;
     the buffered voice is increased by +3.4 dB, without amix normalization.
-    Overlay audio is excluded. Captions are applied after the difference blend.
+    Still-image RGB brightness is multiplied by 0.8 before overlay composition.
+    Overlay audio is excluded. Difference blending uses 70% overlay opacity;
+    captions are applied afterwards to preserve their brightness and readability.
     Retain intermediates for the
     lifecycle runner to clean only after acknowledged job completion.
 
@@ -103,6 +109,8 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
                 "music_gain_db": MUSIC_GAIN_DB,
                 "voice_gain_db": 3.4,
                 "blend_mode": "difference",
+                "image_brightness": IMAGE_BRIGHTNESS,
+                "overlay_opacity": OVERLAY_OPACITY,
                 "image_motion": "gentle_shake",
                 "image_motion_periods_seconds": {"x": SHAKE_PERIOD_X, "y": SHAKE_PERIOD_Y},
             },
@@ -186,7 +194,7 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
             "force_original_aspect_ratio=increase,"
             f"crop={video['width']}:{video['height']},setsar=1,fps={fps},"
             "setpts=PTS-STARTPTS,format=gbrp[film];"
-            "[base][film]blend=all_mode=difference:shortest=1,"
+            f"[base][film]blend=all_mode=difference:all_opacity={OVERLAY_OPACITY}:shortest=1,"
             "ass=captions.ass:fontsdir=fonts,format=yuv420p[video];"
             "[1:a:0]asetpts=PTS-STARTPTS,volume=3.4dB,"
             f"{voice_layout}"

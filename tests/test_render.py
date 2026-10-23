@@ -194,12 +194,20 @@ def test_real_mix_gains_difference_overlay_and_short_asset_loops(
     assert music_db == pytest.approx(-12.0, abs=0.35)
     assert tone_amplitude(mixed, 2000) < 0.001, "Overlay soundtrack must not enter the mix"
     assert np.max(np.abs(mixed)) < 1, "Quiet test sources must mix without clipping"
+    normalized = frame(work / "segment_0000.mp4", 0.1)[100:140, 100:140].mean(axis=(0, 1))
+    assert np.allclose(normalized, (76.8, 102.4, 128), atol=4), (
+        "Image brightness must multiply RGB by 0.8 before blending"
+    )
     for time in (0.1, 0.9):
         background = frame(out, time)[100:140, 100:140].mean(axis=(0, 1))
-        assert np.allclose(background, (64, 96, 128), atol=6), "RGB difference: abs(image - film)"
+        # 30% dimmed image + 70% difference(dimmed image, gray-32 overlay).
+        assert np.allclose(background, (54.4, 80, 105.6), atol=6), (
+            "Difference overlay must use 70% opacity over the dimmed image"
+        )
     assert abs(float(probe(out)["format"]["duration"]) - 1.013) < 0.05
     composition = json.loads((work / "composition.json").read_text())
     assert composition["blend_mode"] == "difference"
+    assert composition["image_brightness"] == 0.8 and composition["overlay_opacity"] == 0.7
     assert composition["music_gain_db"] == -12.0 and composition["voice_gain_db"] == 3.4
 
 
