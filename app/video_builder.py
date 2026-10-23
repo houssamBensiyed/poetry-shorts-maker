@@ -23,22 +23,25 @@ from app.footage import probe
 from app.timeline import validate_plan
 
 log = logging.getLogger("video_builder")
+MUSIC_GAIN_DB = -12.0
+SHAKE_PERIOD_X = 2.4
+SHAKE_PERIOD_Y = 3.2
 
 
 def image_motion_filter(width, height, fps, start):
-    """Use a small fixed overscan and slow sinusoidal movement without black edges.
+    """Use small, smooth oscillations at a moderate pace without black edges.
 
     Work at twice the output resolution for half-pixel crop steps. Three percent
-    overscan leaves room for shallow independent 14/18-second horizontal/vertical
+    overscan leaves room for shallow independent 2.4/3.2-second horizontal/vertical
     cycles. Global timeline time keeps phase consistent across image cuts.
     """
     time = f"(on/{fps}+{start:.9f})"
     return (
         f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,"
-        f"crop={width * 2}:{height * 2},setsar=1,"
+        f"crop={width * 2}:{height * 2},setsar=1,format=gbrp,"
         "zoompan=z=1.03:"
-        f"x='(iw-iw/zoom)/2*(1+0.35*sin(2*PI*{time}/14))':"
-        f"y='(ih-ih/zoom)/2*(1+0.35*sin(2*PI*{time}/18))':"
+        f"x='(iw-iw/zoom)/2*(1+0.35*sin(2*PI*{time}/{SHAKE_PERIOD_X}))':"
+        f"y='(ih-ih/zoom)/2*(1+0.35*sin(2*PI*{time}/{SHAKE_PERIOD_Y}))':"
         f"d=1:s={width}x{height}:fps={fps},setpts=PTS-STARTPTS"
     )
 
@@ -59,7 +62,7 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
     the output, loop images or short videos, and quantize shared cut boundaries
     once. Segment normalization occupies the first half of progress; caption
     difference blend, caption burn-in and audio mixing occupy the second half.
-    One random music track is looped/trimmed to the voice duration at -9.0 dB;
+    One random music track is looped/trimmed to the voice duration at -12.0 dB;
     the buffered voice is increased by +3.4 dB, without amix normalization.
     Overlay audio is excluded. Captions are applied after the difference blend.
     Retain intermediates for the
@@ -97,10 +100,11 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
             {
                 "music": str(music.resolve()),
                 "overlay": str(overlay),
-                "music_gain_db": -9.0,
+                "music_gain_db": MUSIC_GAIN_DB,
                 "voice_gain_db": 3.4,
                 "blend_mode": "difference",
-                "image_motion": "slow_shake",
+                "image_motion": "gentle_shake",
+                "image_motion_periods_seconds": {"x": SHAKE_PERIOD_X, "y": SHAKE_PERIOD_Y},
             },
             indent=2,
         )
@@ -187,7 +191,7 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
             "[1:a:0]asetpts=PTS-STARTPTS,volume=3.4dB,"
             f"{voice_layout}"
             "aformat=sample_rates=48000:channel_layouts=stereo[voice];"
-            "[3:a:0]asetpts=PTS-STARTPTS,volume=-9.0dB,"
+            f"[3:a:0]asetpts=PTS-STARTPTS,volume={MUSIC_GAIN_DB:.1f}dB,"
             "aformat=sample_rates=48000:channel_layouts=stereo[music];"
             "[voice][music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
             f"atrim=duration={plan.duration:.9f}[audio]"

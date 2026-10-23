@@ -25,11 +25,12 @@ The launcher only listens on your own computer.
 Use **Play with sound** under the video to start playback with sound enabled and
 volume at 100%. The label below it shows the current mute/volume state. The native
 video controls can still change the volume. This only controls browser playback;
-the downloaded MP4 contains the voice at +3.4 dB mixed with music at −9.0 dB.
+the downloaded MP4 contains the voice at +3.4 dB mixed with music at −12.0 dB.
 
 The shared renderer automatically picks one track from `assets/music/`, loops the
-film overlay from `assets/overlays/` using difference blending, and adds very slow,
-shallow motion to still images. No extra uploads are required. Music and overlay
+film overlay from `assets/overlays/` using difference blending, and adds gentle,
+shallow motion to still images. Its 2.4/3.2-second cycles increase shake speed while
+keeping image movement small. No extra uploads are required. Music and overlay
 paths come from `composition` in `config.yaml`; missing assets block the test
 before transcription. Overlay audio is excluded and captions are applied after
 blending. The selection seed reproduces both image planning and music choice.

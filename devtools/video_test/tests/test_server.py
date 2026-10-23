@@ -96,7 +96,7 @@ def assert_voice_and_music_mixed(source, output, music):
     length = min(len(original), len(rendered))
     original, rendered = original[:length], rendered[:length]
     soundtrack = decode(music, duration=length / 16000)[:length]
-    voice_gain, music_gain = 10 ** (3.4 / 20), 10 ** (-9.0 / 20)
+    voice_gain, music_gain = 10 ** (3.4 / 20), 10 ** (-12.0 / 20)
     expected = original * voice_gain + soundtrack * music_gain
     assert np.sqrt(np.mean(original**2)) > 0.05, "The input must contain audible sound"
     assert np.corrcoef(expected, rendered)[0, 1] > 0.98, "The output must carry the requested mix"
@@ -256,7 +256,7 @@ def test_real_render_from_buffer_and_video_download(client):
         Path(client.config["paths"]["buffer"]) / "ui-test" / state["id"] / original["audio"]["file"]
     )
     composition = run["composition"]
-    assert composition["voice_gain_db"] == 3.4 and composition["music_gain_db"] == -9.0
+    assert composition["voice_gain_db"] == 3.4 and composition["music_gain_db"] == -12.0
     assert composition["blend_mode"] == "difference"
     assert_voice_and_music_mixed(voice, output, composition["music"])
     work = Path(client.config["paths"]["temp"]) / "ui-test" / state["id"] / run["id"]

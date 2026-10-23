@@ -49,14 +49,16 @@ one music track per reel from `composition.music_directory`, using the footage
 seed when supplied. The configured film overlay is a separate local video input.
 Asset presence is checked before transcription; FFmpeg validates media content.
 
-Still-image segments use 3% overscan and shallow sinusoidal offsets with 14-second
-horizontal and 18-second vertical cycles. Processing at twice the output size
-allows finer crop steps. Motion phase follows the global timeline across cuts;
+Still-image segments use 3% overscan and shallow sinusoidal offsets with 2.4-second
+horizontal and 3.2-second vertical cycles. These shorter cycles increase shake
+speed while keeping the existing travel distance and overscan. Processing RGB
+at twice the output size allows finer crop steps without chroma-grid jumps.
+Motion phase follows the global timeline across cuts;
 existing video sources retain their own motion.
 
 The final pass loops/scales the overlay, blends RGB channels using difference,
 then draws captions. It mixes the original voice at +3.4 dB with the chosen track
-at −9.0 dB, without amix normalization. Mono voice is duplicated into stereo
+at −12.0 dB, without amix normalization. Mono voice is duplicated into stereo
 without implicit pan attenuation; overlay audio is never mapped. Output duration
 is bounded by the voice timeline, including when either asset is shorter.
 `composition.json` records asset choices and fixed effects for diagnosis. The dev

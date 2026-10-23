@@ -80,10 +80,10 @@ The renderer automatically uses the bundled assets for both normal processing
 and the dev tool. Your inputs remain a voice recording and images.
 
 - Choose one random track from `assets/music/` per reel; loop it as needed at
-  **−9.0 dB** and mix it with the original voice at **+3.4 dB**.
+  **−12.0 dB** and mix it with the original voice at **+3.4 dB**.
 - Loop the film-grain video from `assets/overlays/` over the footage with the
   **difference** blend mode. Its audio is excluded; captions are drawn afterwards.
-- Give still images a very slow, shallow shake with a small overscan so edges
+- Give still images a gentle, shallow shake at a moderate pace, with overscan so edges
   stay covered. The overlay and captions remain steady.
 
 Set `composition.music_directory` and `composition.overlay_file` in `config.yaml`

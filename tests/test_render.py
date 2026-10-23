@@ -191,7 +191,7 @@ def test_real_mix_gains_difference_overlay_and_short_asset_loops(
     voice_db = 20 * np.log10(tone_amplitude(mixed, 440) / tone_amplitude(original, 440))
     music_db = 20 * np.log10(tone_amplitude(mixed, 1000) / music_level)
     assert voice_db == pytest.approx(3.4, abs=0.35)
-    assert music_db == pytest.approx(-9.0, abs=0.35)
+    assert music_db == pytest.approx(-12.0, abs=0.35)
     assert tone_amplitude(mixed, 2000) < 0.001, "Overlay soundtrack must not enter the mix"
     assert np.max(np.abs(mixed)) < 1, "Quiet test sources must mix without clipping"
     for time in (0.1, 0.9):
@@ -200,10 +200,12 @@ def test_real_mix_gains_difference_overlay_and_short_asset_loops(
     assert abs(float(probe(out)["format"]["duration"]) - 1.013) < 0.05
     composition = json.loads((work / "composition.json").read_text())
     assert composition["blend_mode"] == "difference"
-    assert composition["music_gain_db"] == -9.0 and composition["voice_gain_db"] == 3.4
+    assert composition["music_gain_db"] == -12.0 and composition["voice_gain_db"] == 3.4
 
 
-def test_images_move_slowly_and_never_expose_borders(tmp_path, composition_assets):
+def test_images_shake_gently_at_a_balanced_speed_without_exposed_borders(
+    tmp_path, composition_assets
+):
     c = load_config()
     c["composition"] = composition_assets
     c["video"].update(width=320, height=480, fps=20, preset="ultrafast", crf=16)
@@ -234,11 +236,31 @@ def test_images_move_slowly_and_never_expose_borders(tmp_path, composition_asset
         capture_output=True,
     )
     frames = np.frombuffer(raw.stdout, np.uint8).reshape(-1, 480, 320, 3)
-    centers = np.array([np.argwhere(f.min(axis=2) > 230).mean(axis=0) for f in frames])
+    # Intensity-weighted centers retain subpixel movement. A binary white mask
+    # can jump when a softened edge crosses its threshold, even during smooth motion.
+    centers = []
+    for f in frames:
+        weights = np.maximum(f.mean(axis=2) - 110, 0)
+        mass = weights.sum()
+        centers.append(
+            [
+                np.dot(np.arange(480), weights.sum(axis=1)) / mass,
+                np.dot(np.arange(320), weights.sum(axis=0)) / mass,
+            ]
+        )
+    centers = np.array(centers)
     assert 0.4 < np.linalg.norm(centers[-1] - centers[0]) < 4, (
         "Shallow motion replaces static images"
     )
     assert np.max(np.linalg.norm(np.diff(centers, axis=0), axis=1)) < 1.1, "No sudden shaking"
+    # Measure the image's reversals: a shot should oscillate rather than drift.
+    steps = np.diff(centers[:, 1])
+    directions = np.sign(steps[np.abs(steps) > 0.05])
+    reversals = np.count_nonzero(directions[1:] != directions[:-1])
+    assert reversals >= 3, "Image shake should reverse gently several times within the shot"
+    assert np.all(np.ptp(centers, axis=0) < np.array([480, 320]) * 0.012 + 1), (
+        "Faster shaking must keep the same small travel distance"
+    )
     assert np.min(frames[:, :, [0, -1]]) > 50
     assert np.min(frames[:, [0, -1], :]) > 50, "Overscan must prevent black borders"
 

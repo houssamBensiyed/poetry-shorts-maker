@@ -96,8 +96,8 @@ Punctuation groups timestamped words across transcription segments. A long punct
 
 The first image begins at zero. Sentences meeting the word threshold start a new image selection; shorter sentences retain the current image. Images are scaled and center-cropped while preserving aspect ratio. Shared frame boundaries avoid gaps, and the output duration matches the voiceover within one frame.
 
-Still images use a small overscan and slow, shallow shaking motion without exposed
-borders. The renderer selects one music track for the reel, applies −9.0 dB to
+Still images use a small overscan and gentle, moderately paced shaking without exposed
+borders. The renderer selects one music track for the reel, applies −12.0 dB to
 music and +3.4 dB to voice, and mixes without automatic normalization. Mono voices
 are centered in stereo without implicit pan attenuation. The film overlay loops
 with difference blending before captions; its soundtrack is excluded. Short
