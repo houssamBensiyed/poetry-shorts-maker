@@ -23,7 +23,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.cancellation import Cancelled, check_cancel
@@ -32,17 +32,37 @@ from app.config import (
     check_render_config,
     check_transcription_config,
     load_config,
+    normalize_channel_name,
+    validate_shake,
 )
+from app.ffmpeg import run_ffmpeg
 from app.footage import VIDEO_SUFFIXES, audio_duration, video_duration
 from app.timeline import Source, build_plan, sentences_from_words
 from app.transcription import Transcriber
-from app.video_builder import render
+from app.video_builder import image_motion_filter, render
 
 STATIC = Path(__file__).parent / "static"
 IMAGE_LIMIT = 20 * 1024 * 1024
 AUDIO_LIMIT = 100 * 1024 * 1024
 VIDEO_LIMIT = 256 * 1024 * 1024
 log = logging.getLogger(__name__)
+
+
+class ShakeOptions(BaseModel):
+    """Portable settings shared by preview, export and the actual renderer."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    enabled: bool = True
+    zoom: float = 1.03
+    amplitude_x: float = 0.35
+    amplitude_y: float = 0.35
+    period_x: float = 2.4
+    period_y: float = 3.2
+
+    @model_validator(mode="after")
+    def valid_effect(self):
+        validate_shake(self.model_dump())
+        return self
 
 
 class RunOptions(BaseModel):
@@ -53,6 +73,13 @@ class RunOptions(BaseModel):
     size: Literal["preview", "full"] = "preview"
     mode: Literal["image", "video", "hybrid"] = "image"
     seed: int = Field(default=42, ge=0, le=2147483647)
+    channel_name: str = Field(default="", max_length=80)
+    shake: ShakeOptions | None = None
+
+    @field_validator("channel_name")
+    @classmethod
+    def channel_label(cls, value):
+        return normalize_channel_name(value)
 
 
 class Session:
@@ -72,6 +99,7 @@ class Session:
         self.video_dir = self.directory / "videos"
         self.audio_dir = self.directory / "voiceovers"
         self.run = None
+        self.shake_preview = None
 
     def run_directory(self, run_id):
         return self.directory / "runs" / run_id
@@ -94,6 +122,7 @@ class Session:
                     "audio": self.audio,
                     "run": self.run,
                     "uploading": self.uploading,
+                    "shake_preview": self.shake_preview,
                 }
             )
 
@@ -185,7 +214,95 @@ def create_app(config=None):
             "full_size": f"{config['video']['width']} × {config['video']['height']}",
             "preview_size": f"360 × {max(2, round(config['video']['height'] * 360 / config['video']['width'] / 2) * 2)}",
             "fps": config["video"]["fps"],
+            "shake": config["shake"],
+            "channel_name": config["captions"]["channel_name"],
         }
+
+    @app.post("/api/shake/export")
+    def export_shake(options: ShakeOptions):
+        return JSONResponse(
+            {"version": 1, "shake": options.model_dump()},
+            headers={"Content-Disposition": 'attachment; filename="shake-settings.json"'},
+        )
+
+    @app.post("/api/sessions/{session_id}/shake-preview")
+    def preview_shake(session_id: str, options: ShakeOptions):
+        session = get_session(session_id)
+        with session.lock:
+            session.available()
+            if not session.images:
+                raise HTTPException(400, "Upload one image to preview its shake effect.")
+            if not shutil.which("ffmpeg"):
+                raise HTTPException(400, "FFmpeg is required for shake preview.")
+            if not render_lock.acquire(blocking=False):
+                raise HTTPException(409, "Another preview or test is running.")
+            session.uploading = True
+            session.stop.clear()
+            image_path = media_path(session, session.images[0])
+        preview_id = uuid.uuid4().hex
+        work = session.directory / "shake-previews" / preview_id
+        width = 360
+        height = max(2, round(config["video"]["height"] * width / config["video"]["width"] / 2) * 2)
+        fps = config["video"]["fps"]
+        try:
+            work.mkdir(parents=True)
+            run_ffmpeg(
+                [
+                    "-loop",
+                    "1",
+                    "-framerate",
+                    str(fps),
+                    "-i",
+                    str(image_path),
+                    "-an",
+                    "-vf",
+                    image_motion_filter(width, height, fps, 0, options.model_dump()),
+                    "-frames:v",
+                    str(6 * fps),
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-crf",
+                    "18",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-threads",
+                    "2",
+                    "-filter_threads",
+                    "1",
+                    "preview.mp4",
+                ],
+                work,
+                session.stop,
+                6,
+                lambda _: None,
+                "Shake preview",
+            )
+            with session.lock:
+                session.shake_preview = {
+                    "id": preview_id,
+                    "shake": options.model_dump(),
+                    "duration": 6,
+                }
+                return session.snapshot()
+        except (ValueError, RuntimeError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        finally:
+            with session.lock:
+                session.uploading = False
+            render_lock.release()
+
+    @app.get("/api/sessions/{session_id}/shake-preview/{preview_id}")
+    def preview_file(session_id: str, preview_id: str):
+        session = get_session(session_id)
+        with session.lock:
+            if not session.shake_preview or session.shake_preview["id"] != preview_id:
+                raise HTTPException(404, "No shake preview for this session.")
+            return FileResponse(
+                session.directory / "shake-previews" / preview_id / "preview.mp4",
+                media_type="video/mp4",
+            )
 
     @app.post("/api/sessions", status_code=201)
     def new_session():
@@ -418,6 +535,9 @@ def create_app(config=None):
             # The test seed reproduces both image selection and the music choice.
             run_config["footage"]["random_seed"] = options.seed
             run_config["footage"]["mode"] = options.mode
+            run_config["captions"]["channel_name"] = options.channel_name
+            if options.shake is not None:
+                run_config["shake"] = options.shake.model_dump()
             if options.size == "preview":
                 scale = 360 / config["video"]["width"]
                 height = max(2, round(config["video"]["height"] * scale / 2) * 2)

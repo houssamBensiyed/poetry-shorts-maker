@@ -313,7 +313,18 @@ def test_invalid_uploads_and_image_count(client, monkeypatch):
 def test_real_render_from_buffer_and_video_download(client):
     base = session(client)
     original = fill(client, base)
-    response = client.post(f"{base}/run", json={"size": "full", "seed": 5})
+    settings = {
+        "enabled": True,
+        "zoom": 1.04,
+        "amplitude_x": 0.2,
+        "amplitude_y": 0.1,
+        "period_x": 1.5,
+        "period_y": 2.0,
+    }
+    response = client.post(
+        f"{base}/run",
+        json={"size": "full", "seed": 5, "shake": settings, "channel_name": "Dev Channel"},
+    )
     assert response.status_code == 202, response.text
     state = wait(client, base)
     run = state["run"]
@@ -337,6 +348,9 @@ def test_real_render_from_buffer_and_video_download(client):
     assert abs(float(details["format"]["duration"]) - 2) < 0.05
     voice = temporary / "voiceovers" / original["audio"]["file"]
     composition = run["composition"]
+    assert composition["shake"] == settings
+    assert composition["channel_name"] == "Dev Channel"
+    assert ",Channel," in (temporary / "runs" / run["id"] / "captions.ass").read_text()
     assert composition["voice_gain_db"] == 3.4 and composition["music_gain_db"] == -12.0
     assert composition["blend_mode"] == "difference"
     assert composition["image_brightness"] == 0.8 and composition["overlay_opacity"] == 0.7
@@ -362,8 +376,58 @@ def test_real_render_from_buffer_and_video_download(client):
     second = wait(client, base)["run"]
     assert second["status"] == "passed" and (second["width"], second["height"]) == (360, 640)
     second_output = temporary / "runs" / second["id"] / "video.mp4"
+    assert ",Channel," not in (second_output.parent / "captions.ass").read_text()
     assert_voice_and_music_mixed(voice, second_output, second["composition"]["music"])
     assert output.is_file()
+
+
+def test_shake_export_and_preview_need_only_one_image(client):
+    base = session(client)
+    settings = {
+        "enabled": False,
+        "zoom": 1.1,
+        "amplitude_x": 0.7,
+        "amplitude_y": 0.2,
+        "period_x": 1.0,
+        "period_y": 2.0,
+    }
+    response = client.post("/api/shake/export", json=settings)
+    assert (
+        response.status_code == 200
+        and "shake-settings.json" in response.headers["content-disposition"]
+    )
+    assert response.json() == {"version": 1, "shake": settings}
+    assert client.post(f"{base}/shake-preview", json=settings).status_code == 400
+    assert client.post(f"{base}/media/image", content=image_bytes()).status_code == 201
+    response = client.post(f"{base}/shake-preview", json=settings)
+    assert response.status_code == 200, response.text
+    preview = response.json()["shake_preview"]
+    assert preview["shake"] == settings and preview["duration"] == 6
+    url = f"{base}/shake-preview/{preview['id']}"
+    assert client.get(url).headers["content-type"] == "video/mp4"
+    assert client.get(url, headers={"Range": "bytes=0-31"}).status_code == 206
+    assert client.get(f"{session(client)}/shake-preview/{preview['id']}").status_code == 404
+    assert not client.get(base).json()["uploading"]
+    assert not client.whisper_requests
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("period_x", 0),
+        ("zoom", 1.21),
+        ("amplitude_y", 2),
+        ("enabled", "false"),
+        ("zoom", "1.03:evil"),
+    ],
+)
+def test_invalid_shake_cannot_reach_preview_export_or_render(client, field, value):
+    base = session(client)
+    settings = {field: value}
+    assert client.post("/api/shake/export", json=settings).status_code == 422
+    assert client.post(f"{base}/shake-preview", json=settings).status_code == 422
+    assert client.post(f"{base}/run", json={"shake": settings}).status_code == 422
+    assert client.post(f"{base}/run", json={"channel_name": "x" * 81}).status_code == 422
 
 
 @pytest.mark.parametrize("mode", ["video", "hybrid"])

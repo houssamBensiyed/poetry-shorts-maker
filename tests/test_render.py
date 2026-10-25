@@ -11,7 +11,7 @@ from app.captions import layout
 from app.config import load_config
 from app.footage import probe
 from app.timeline import Source, Word, build_plan, sentences_from_words
-from app.video_builder import render
+from app.video_builder import image_motion_filter, render
 
 
 def command(args):
@@ -308,3 +308,60 @@ def test_each_render_selects_one_random_music_track(tmp_path, composition_assets
         assert tone_amplitude(samples, frequency) > 0.02
         assert tone_amplitude(samples, 2500 - frequency) < 0.001, "Mix exactly one selected track"
     assert len(set(choices)) == 2
+
+
+def test_shake_controls_change_real_motion_speed_distance_and_disable(tmp_path):
+    image = tmp_path / "marker.png"
+    pixels = np.full((240, 160, 3), 100, dtype=np.uint8)
+    pixels[100:140, 60:100] = 255
+    Image.fromarray(pixels).save(image)
+
+    def motion(**overrides):
+        settings = {**load_config()["shake"], "zoom": 1.12, "amplitude_y": 0, **overrides}
+        raw = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-loop",
+                "1",
+                "-framerate",
+                "20",
+                "-i",
+                str(image),
+                "-vf",
+                image_motion_filter(160, 240, 20, 0, settings),
+                "-frames:v",
+                "80",
+                "-filter_threads",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "pipe:1",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+        frames = np.frombuffer(raw, np.uint8).reshape(-1, 240, 160, 3)
+        assert frames[:, :, [0, -1]].min() > 50 and frames[:, [0, -1]].min() > 50
+        weights = np.maximum(frames.mean(axis=3) - 110, 0)
+        x = (weights.sum(axis=1) * np.arange(160)).sum(axis=1) / weights.sum(axis=(1, 2))
+        y = (weights.sum(axis=2) * np.arange(240)).sum(axis=1) / weights.sum(axis=(1, 2))
+        assert np.ptp(y) < 0.01, "Zero vertical amplitude must hold the vertical position"
+        return x
+
+    small = motion(amplitude_x=0.2, period_x=2)
+    large = motion(amplitude_x=0.8, period_x=2)
+    fast = motion(amplitude_x=0.8, period_x=1)
+    still = motion(enabled=False)
+    assert np.ptp(large) > 3 * np.ptp(small)
+    assert np.ptp(still) < 0.01
+
+    def reversals(x):
+        steps = np.diff(x)
+        signs = np.sign(steps[np.abs(steps) > 0.03])
+        return np.count_nonzero(signs[1:] != signs[:-1])
+
+    assert reversals(fast) >= reversals(large) + 3

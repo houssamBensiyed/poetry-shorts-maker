@@ -104,6 +104,7 @@ class Processor:
         prepare: Callable[[threading.Event], None] | None = None,
         empty_message: str | None = None,
         mode: str | None = None,
+        channel_name: str | None = None,
     ) -> bool:
         """Acquire queue ownership and launch a non-daemon worker thread.
 
@@ -121,15 +122,19 @@ class Processor:
             if self.closed or self.refreshing or self.active:
                 return False
             services = self.services
-            if mode is not None:
-                if mode not in ("image", "video", "hybrid"):
+            if mode is not None or channel_name is not None:
+                if mode is not None and mode not in ("image", "video", "hybrid"):
                     raise ValueError("Footage mode must be image, video or hybrid")
                 if not self.default_services:
                     raise ValueError("Mode overrides require the default local composition")
                 from app.bootstrap import build_services
+                from app.config import normalize_channel_name
 
                 run_config = deepcopy(self.config)
-                run_config["footage"]["mode"] = mode
+                if mode is not None:
+                    run_config["footage"]["mode"] = mode
+                if channel_name is not None:
+                    run_config["captions"]["channel_name"] = normalize_channel_name(channel_name)
                 services = build_services(run_config)
             if not self.run_lock.acquire():
                 return False
@@ -143,6 +148,9 @@ class Processor:
                     voiceover="",
                     render_progress=None,
                     mode=mode or self.config["footage"]["mode"],
+                    channel_name=channel_name
+                    if channel_name is not None
+                    else self.config["captions"]["channel_name"],
                 )
                 self.thread = threading.Thread(
                     target=self._run,

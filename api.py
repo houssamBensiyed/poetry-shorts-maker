@@ -13,10 +13,10 @@ from contextlib import asynccontextmanager
 from typing import Literal
 
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-from app.config import load_config
+from app.config import load_config, normalize_channel_name
 from app.logger import configure
 from app.processor import Processor
 
@@ -64,14 +64,25 @@ def create_app(config=None, processor=None):
             raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
 
     @app.get("/run", dependencies=[Depends(authenticate)])
-    def run(mode: Literal["image", "video", "hybrid"] | None = None):
+    def run(
+        mode: Literal["image", "video", "hybrid"] | None = None,
+        channel_name: str | None = Query(default=None, max_length=80),
+    ):
         """Request a manual run and return an uncached acknowledgement.
 
         HTTP 202 means a worker was started, not that jobs finished successfully.
         A refused start returns already_running; clients use /status to monitor work.
         Because this GET has a side effect, it is intended for explicit API triggers.
         """
-        if not (processor.start() if mode is None else processor.start(mode=mode)):
+        overrides = {}
+        if mode is not None:
+            overrides["mode"] = mode
+        if channel_name is not None:
+            try:
+                overrides["channel_name"] = normalize_channel_name(channel_name)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        if not processor.start(**overrides):
             return JSONResponse(
                 {"status": "already_running"}, headers={"Cache-Control": "no-store"}
             )

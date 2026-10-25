@@ -77,6 +77,11 @@ Edit existing values in [`config.yaml`](../config.yaml). Restart the dashboard o
 | `composition.music_directory` | Local background music pool; one random track per reel |
 | `composition.overlay_file` | Local film-grain video blended using difference |
 | `captions.position` | `top`, `center` or `bottom` |
+| `captions.channel_name` | Optional channel label below captions; blank omits it; maximum 80 characters |
+| `shake.enabled` | Enable still-image shake; false also disables its extra zoom |
+| `shake.zoom` | Overscan factor from 1 to 1.2; default 1.03 |
+| `shake.amplitude_x` / `shake.amplitude_y` | Fraction of available horizontal/vertical crop travel, 0–1; default 0.35 |
+| `shake.period_x` / `shake.period_y` | Seconds per cycle, 0.2–30; smaller is faster; defaults 2.4 / 3.2 |
 | `captions.font_size` / `captions.safe_margin` | Caption size and distance from video edges |
 | `captions.max_words_per_line` | Caption line wrapping |
 | `captions.color` / `captions.outline_color` / `captions.outline_width` | Caption colors and outline |
@@ -156,6 +161,7 @@ Export the same key in your client shell before running these commands. Compose 
 curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" http://127.0.0.1:8000/status
 curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" http://127.0.0.1:8000/run
 curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" 'http://127.0.0.1:8000/run?mode=hybrid'
+curl -G -H "X-API-Key: $VIDEO_BUILDER_API_KEY" --data-urlencode 'channel_name=My Channel' http://127.0.0.1:8000/run
 ```
 
 Never put the key in a URL. Docker publishes the API only on the host's loopback interface. Change its host port with `VIDEO_BUILDER_HTTP_PORT`. Remote access requires your own HTTPS reverse proxy forwarding the authentication header; disable caching and prefetching for `/run`.
@@ -173,6 +179,19 @@ voice source. The CLI supports `python -m app.buffer run --mode video` (also wit
 subsequent selections use the combined pool. Video mode does not require images.
 Missing/invalid required assets fail before transcription and retain queued voices.
 Use at least two clips if video mode should change files at each eligible cut.
+
+`channel_name` is a per-run override, independent of footage mode. Omit it to use
+the configured default; pass an empty string to suppress that default. Invalid
+names return HTTP 422 before starting a run. The console and dev tool also offer
+an optional channel-name field. The CLI accepts `--channel-name "My Channel"`.
+The label renders only while a caption is present, below its full multiline
+layout, at 8 pt (96 DPI, 10.67 pixels on a 1080-wide output), scaled with output
+width. Caption layout reserves room for it at top, center or bottom positions.
+
+Use the dev-tool shake preview/export to tune movement. Exported `shake` keys map
+directly to YAML settings above. Zero movement amplitudes hold the image steady
+at the chosen zoom; `enabled: false` removes both motion and overscan. At zoom 1
+there is no spare crop area, so movement is zero. Video clips retain natural motion.
 
 ## Running safely
 

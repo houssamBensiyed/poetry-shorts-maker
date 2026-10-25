@@ -38,7 +38,15 @@ composition:
   videos_directory: assets/videos
   music_directory: assets/music
   overlay_file: assets/overlays/Authentic vintage film grain overlay nostalgic to any project, creating retro cinematic effects.mp4
+shake:
+  enabled: true
+  zoom: 1.03
+  amplitude_x: 0.35  # Fraction of available horizontal crop travel (0–1)
+  amplitude_y: 0.35  # Fraction of available vertical crop travel (0–1)
+  period_x: 2.4  # Seconds per cycle; smaller values move faster
+  period_y: 3.2
 captions:
+  channel_name: ""  # Optional small label below the captions
   font_name: Special Elite
   font_file: assets/fonts/SpecialElite-Regular.ttf
   font_size: 70

@@ -10,6 +10,30 @@ let audioKey = "";
 let eventKey = "";
 let videoKey = "";
 let pollTimer;
+let shakePreviewKey = "";
+const shakeInputs = ["shake-enabled", "shake-zoom", "shake-x", "shake-y", "shake-period-x", "shake-period-y"];
+
+function shakeSettings() {
+  return {
+    enabled: $("shake-enabled").checked,
+    zoom: Number($("shake-zoom").value) / 100,
+    amplitude_x: Number($("shake-x").value) / 100,
+    amplitude_y: Number($("shake-y").value) / 100,
+    period_x: Number($("shake-period-x").value),
+    period_y: Number($("shake-period-y").value),
+  };
+}
+function validShake() {
+  return shakeInputs.every(id => $(id).checkValidity() && $(id).value !== "");
+}
+function setShake(settings) {
+  $("shake-enabled").checked = settings.enabled;
+  $("shake-zoom").value = settings.zoom * 100;
+  $("shake-x").value = settings.amplitude_x * 100;
+  $("shake-y").value = settings.amplitude_y * 100;
+  $("shake-period-x").value = settings.period_x;
+  $("shake-period-y").value = settings.period_y;
+}
 const storage = {
   get(key) {
     try {
@@ -119,10 +143,27 @@ function updateChecks() {
   }
   const locked = Boolean(busy || active() || session.uploading);
   document.body.classList.toggle("busy", locked);
-  for (const id of ["image-drop", "video-drop", "audio-drop", "remove-audio", "mode", "size", "seed"])
+  for (const id of ["image-drop", "video-drop", "audio-drop", "remove-audio", "mode", "size", "seed", "channel-name", ...shakeInputs])
     $(id).disabled = locked;
   $("image-drop").disabled = locked || session.images.length >= 10;
   $("video-drop").disabled = locked || session.videos.length >= 10;
+  $("shake-preview-button").disabled = locked || !connected || !info?.ffmpeg || !session.images.length || !validShake();
+  $("shake-export").disabled = locked || !connected || !validShake();
+  $("shake-zoom-value").textContent = `${$("shake-zoom").value}%`;
+  $("shake-x-value").textContent = `${$("shake-x").value}%`;
+  $("shake-y-value").textContent = `${$("shake-y").value}%`;
+  const preview = session.shake_preview;
+  if (preview && preview.id !== shakePreviewKey) {
+    shakePreviewKey = preview.id;
+    $("shake-player").src = `${base()}/shake-preview/${preview.id}`;
+    $("shake-player").hidden = false;
+  }
+  $("shake-status").textContent = busy ? "Working…" : !validShake()
+    ? "Enter cycle times between 0.2 and 30 seconds."
+    : !session.images.length ? "Upload one image to preview its shake. No voice or transcription needed."
+    : preview ? (JSON.stringify(preview.shake) === JSON.stringify(shakeSettings())
+      ? "Preview matches the current settings." : "Settings changed — preview again to see the new movement.")
+    : "Ready to preview six seconds of image motion.";
   document
     .querySelectorAll(".remove-image")
     .forEach((button) => (button.disabled = locked));
@@ -134,6 +175,7 @@ function updateChecks() {
     !audioReady ||
     !toolsReady ||
     !info?.speech ||
+    !validShake() ||
     !validSeed;
   $("run").hidden = Boolean(active());
   $("stop").hidden = !active();
@@ -456,7 +498,38 @@ $("remove-audio").addEventListener(
   "click",
   () => session.audio && removeMedia(session.audio.id),
 );
-for (const id of ["mode", "size", "seed"]) $(id).addEventListener("input", render);
+for (const id of ["mode", "size", "seed", "channel-name", ...shakeInputs]) $(id).addEventListener("input", render);
+$("shake-preview-button").addEventListener("click", async () => {
+  busy = true;
+  clearError();
+  render();
+  try {
+    session = await api(`${base()}/shake-preview`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(shakeSettings()),
+    });
+  } catch (error) { showError(error); }
+  finally {
+    busy = false;
+    try { session = await api(base()); } catch (error) { showError(error); }
+    render();
+  }
+});
+$("shake-export").addEventListener("click", async () => {
+  clearError();
+  try {
+    const settings = await api("/api/shake/export", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(shakeSettings()),
+    });
+    const url = URL.createObjectURL(new Blob([JSON.stringify(settings, null, 2) + "\n"], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "shake-settings.json";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) { showError(error); }
+});
 $("run").addEventListener("click", async () => {
   if ($("run").disabled) return;
   busy = true;
@@ -470,6 +543,8 @@ $("run").addEventListener("click", async () => {
         size: $("size").value,
         mode: $("mode").value,
         seed: Number($("seed").value),
+        shake: shakeSettings(),
+        channel_name: $("channel-name").value,
       }),
     });
   } catch (error) {
@@ -491,6 +566,8 @@ $("stop").addEventListener("click", async () => {
 });
 async function connect() {
   info = await api("/api/info");
+  setShake(info.shake);
+  $("channel-name").value = info.channel_name;
   $("full-size").textContent = `${info.full_size} · Full size`;
   $("size").options[0].textContent = `${info.preview_size} · Fast preview`;
   $("speech-status").value = info.speech_model
@@ -522,6 +599,10 @@ async function poll() {
       session = null;
       imageKey = audioKey = eventKey = videoKey = "";
       sourceVideoKey = "";
+      shakePreviewKey = "";
+      $("shake-player").pause();
+      $("shake-player").removeAttribute("src");
+      $("shake-player").hidden = true;
       $("image-grid").replaceChildren();
       $("source-video-grid").replaceChildren();
       for (const id of ["audio-player", "video-player"]) {

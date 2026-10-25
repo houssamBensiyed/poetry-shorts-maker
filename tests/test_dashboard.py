@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from PIL import Image
-from textual.widgets import Button, RichLog, Select
+from textual.widgets import Button, Input, RichLog, Select
 
 from app.buffer import VoiceBuffer
 from app.cancellation import check_cancel
@@ -213,12 +213,14 @@ def test_console_selects_footage_mode(tmp_path, monkeypatch, file_server, video_
         try:
             async with Dashboard(p, configure(tmp_path)).run_test(size=(80, 34)) as pilot:
                 p_app = pilot.app
+                p_app.query_one("#channel-name", Input).value = "Console Channel"
                 await pilot.click("#mode")
                 await pilot.press("end" if mode == "hybrid" else "down", "enter")
                 assert p_app.query_one("#mode", Select).value == mode
                 await pilot.click("#start")
                 await finish_run(p, pilot)
                 assert p.status()["mode"] == mode
+                assert p.status()["channel_name"] == "Console Channel"
                 assert p.status()["completed"] == 1 and p.status()["failed"] == 0, p.status()
                 assert not voice.exists()
                 await pilot.click("#exit")

@@ -25,6 +25,25 @@ The launcher only listens on your own computer.
 4. Click **Run test**. Whisper transcribes the voice, then the builder creates the video.
 5. Watch progress, play/download the validated MP4, or save the JSON test report.
 
+The **Shake editor** controls zoom, horizontal/vertical movement and cycle times.
+Smaller cycle times increase speed; movement percentages use the travel available
+inside the zoomed image. Defaults match the existing effect. **Preview shake**
+renders six seconds from the first uploaded image using the actual core filter;
+it needs no voice, captions, music, overlay or transcription credentials. Changing
+a control marks the previous preview as outdated. Replay the clip to compare
+settings. All shake controls affect still images only.
+
+Click **Export shake settings** to download `shake-settings.json`, containing
+`version: 1` and the exact `shake` config. Share that file to describe your desired
+effect, or copy its `shake` values into `config.yaml`. **Run test** uses the same
+values and records them in the run report. The editor does not save to project
+config automatically.
+
+Enter an optional **Channel name** to display a steady 8 pt label below each
+caption block. Leave it blank to omit it. The label scales with output width,
+so its proportions match between fast preview and full-size reels. It appears
+only while captions are present and accepts up to 80 characters.
+
 Use **Play with sound** under the video to start playback with sound enabled and
 volume at 100%. The label below it shows the current mute/volume state. The native
 video controls can still change the volume. This only controls browser playback;
@@ -80,6 +99,7 @@ All uploads, generated videos and diagnostics use unique session/run folders und
 ```text
 temp/ui-test/<session>/images/               Decoded test images
 temp/ui-test/<session>/videos/               Uploaded test clips
+temp/ui-test/<session>/shake-previews/<id>/   Short shake previews and diagnostics
 temp/ui-test/<session>/voiceovers/           Uploaded test voice
 temp/ui-test/<session>/runs/<run>/video.mp4   Test video
 temp/ui-test/<session>/runs/<run>/            Transcript, plan, captions, logs, report

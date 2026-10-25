@@ -200,6 +200,30 @@
                 </button>
                 <div id="source-video-grid" class="image-grid" aria-label="Test session videos"></div>
               </section>
+              <section class="card" aria-labelledby="shake-heading">
+                <div class="card-heading"><h2 id="shake-heading">Shake editor</h2></div>
+                <p class="card-description">Adjust the movement of still images. Preview uses the first uploaded image and the same effect as the final reel.</p>
+                <label><input type="checkbox" id="shake-enabled" checked /> Enable image shake</label>
+                <div class="settings-row">
+                  <label>Zoom <output id="shake-zoom-value">103%</output><input id="shake-zoom" type="range" min="100" max="120" step="0.1" value="103" /></label>
+                  <label>Horizontal movement <output id="shake-x-value">35%</output><input id="shake-x" type="range" min="0" max="100" step="1" value="35" /></label>
+                </div>
+                <div class="settings-row">
+                  <label>Vertical movement <output id="shake-y-value">35%</output><input id="shake-y" type="range" min="0" max="100" step="1" value="35" /></label>
+                  <label>Horizontal cycle (seconds)<input id="shake-period-x" type="number" min="0.2" max="30" step="0.1" value="2.4" /></label>
+                </div>
+                <div class="settings-row">
+                  <label>Vertical cycle (seconds)<input id="shake-period-y" type="number" min="0.2" max="30" step="0.1" value="3.2" /></label>
+                </div>
+                <p class="field-help">Smaller cycle times mean faster movement. Movement is a percentage of the space created by zoom. At 100% zoom there is no room to shake. Disabling shake removes the extra zoom too.</p>
+                <div class="settings-row">
+                  <button id="shake-preview-button" class="button" type="button">Preview shake · 6 seconds</button>
+                  <button id="shake-export" class="button" type="button">Export shake settings</button>
+                </div>
+                <p id="shake-status" class="field-help" role="status">Upload an image to preview. No voice recording or transcription is needed.</p>
+                <video id="shake-player" controls muted playsinline hidden></video>
+                <p class="field-help">Export downloads shake-settings.json. Share that file to communicate your exact settings. These settings also apply when you click Run test.</p>
+              </section>
               <section class="card" aria-labelledby="voice-heading">
                 <div class="card-heading">
                   <div class="heading-group">
@@ -284,6 +308,9 @@
                     />
                   </label>
                 </div>
+                <label for="channel-name">Channel name (optional)</label>
+                <input id="channel-name" type="text" maxlength="80" placeholder="Your channel name" />
+                <p class="field-help">Appears below the captions in 8 pt text, scaled for previews. Leave blank to omit it.</p>
                 <p class="field-help">
                   Whisper transcribes your voice before the video is built.
                   Captions use the words and timings returned by the API.

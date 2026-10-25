@@ -63,7 +63,16 @@ DEFAULTS = {
         "music_directory": "assets/music",
         "overlay_file": "assets/overlays/Authentic vintage film grain overlay nostalgic to any project, creating retro cinematic effects.mp4",
     },
+    "shake": {
+        "enabled": True,
+        "zoom": 1.03,
+        "amplitude_x": 0.35,
+        "amplitude_y": 0.35,
+        "period_x": 2.4,
+        "period_y": 3.2,
+    },
     "captions": {
+        "channel_name": "",
         "font_name": "Special Elite",
         "font_file": "assets/fonts/SpecialElite-Regular.ttf",
         "font_size": 70,
@@ -146,6 +155,8 @@ def validate_config(c):
     UI can open before setup. Provider preflight checks enforce them at run time.
     Raise ValueError on invalid values; do not mutate settings or perform network I/O.
     """
+    validate_shake(c["shake"])
+    normalize_channel_name(c["captions"]["channel_name"])
     if c["footage"]["mode"] not in ("image", "video", "hybrid"):
         raise ValueError("footage.mode must be image, video or hybrid")
     for section, keys in [
@@ -318,9 +329,37 @@ def check_render_config(c):
     This checks file presence, leaving font decoding to Pillow/libass and encoder
     availability to the renderer. Raise ValueError when the file is missing.
     """
+    validate_shake(c["shake"])
+    normalize_channel_name(c["captions"]["channel_name"])
     if not Path(c["captions"]["font_file"]).is_file():
         raise ValueError("Special Elite font is missing; see README font instructions")
     check_composition_config(c)
+
+
+def normalize_channel_name(value):
+    """Treat blank names as absent and keep channel labels to one short line."""
+    if not isinstance(value, str):
+        raise ValueError("Channel name must be text")
+    value = " ".join(value.split())
+    if len(value) > 80 or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise ValueError("Channel name must be at most 80 characters without control characters")
+    return value
+
+
+def validate_shake(shake):
+    """Bound filter parameters and keep motion inside the overscan area."""
+    if type(shake["enabled"]) is not bool:
+        raise ValueError("shake.enabled must be true or false")
+    for key, low, high in [
+        ("zoom", 1, 1.2),
+        ("amplitude_x", 0, 1),
+        ("amplitude_y", 0, 1),
+        ("period_x", 0.2, 30),
+        ("period_y", 0.2, 30),
+    ]:
+        value = shake[key]
+        if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
+            raise ValueError(f"shake.{key} must be a finite number between {low} and {high}")
 
 
 def music_candidates(c):

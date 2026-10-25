@@ -150,10 +150,13 @@ def test_api_mode_reaches_real_renderer_and_keeps_assets(
     from app.video_builder import render
 
     plans = []
+    channel_labels = []
 
     def record(plan, *args):
         plans.append(plan)
-        return render(plan, *args)
+        output = render(plan, *args)
+        channel_labels.append((Path(args[2]) / "captions.ass").read_text())
+        return output
 
     monkeypatch.setattr("app.bootstrap.render", record)
     audio = tmp_path / "voice.wav"
@@ -165,15 +168,27 @@ def test_api_mode_reaches_real_renderer_and_keeps_assets(
         headers = {"X-API-Key": "test-only"}
         assert client.get("/run?mode=invalid", headers=headers).status_code == 422
         assert voice.exists() and not processor.active
-        assert client.get(f"/run?mode={mode}", headers=headers).status_code == 202
+        assert (
+            client.get("/run", params={"channel_name": "x" * 81}, headers=headers).status_code
+            == 422
+        )
+        assert (
+            client.get(
+                "/run", params={"mode": mode, "channel_name": "My Channel"}, headers=headers
+            ).status_code
+            == 202
+        )
         processor.thread.join(timeout=20)
         assert not processor.active
         status = client.get("/status", headers=headers).json()
         assert status["completed"] == 1 and status["failed"] == 0, status
         assert status["mode"] == mode
+        assert status["channel_name"] == "My Channel"
+        assert processor.config["captions"]["channel_name"] == ""
         assert processor.config["footage"]["mode"] == "image", "Overrides are per-run"
     kinds = [interval.source.kind for interval in plans[0].footage]
     assert kinds == (["video", "image", "video"] if mode == "hybrid" else [mode] * 3)
     assert not voice.exists() and video_asset.read_bytes() == original
+    assert ",Channel," in channel_labels[0] and "My Channel" in channel_labels[0]
     output = Path(buffer.events()[0]["output"])
     assert abs(float(probe(output)["format"]["duration"]) - 1) < 0.05

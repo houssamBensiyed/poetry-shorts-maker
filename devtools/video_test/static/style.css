@@ -840,6 +840,17 @@ textarea {
   background: #111;
   border-radius: 5px;
 }
+#shake-player {
+  display: block;
+  width: 100%;
+  max-height: 400px;
+  margin-top: 12px;
+  background: #111;
+}
+#shake-enabled {
+  width: auto;
+  height: auto;
+}
 .video-facts {
   display: grid;
   grid-template-columns: 1fr 1fr;

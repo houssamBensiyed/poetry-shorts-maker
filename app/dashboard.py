@@ -12,7 +12,7 @@ from threading import Event
 from textual.app import App, ComposeResult
 from textual.containers import Grid, Horizontal
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, ProgressBar, RichLog, Select, Static
+from textual.widgets import Button, Footer, Header, Input, ProgressBar, RichLog, Select, Static
 
 log = logging.getLogger("video_builder")
 EMPTY_BUFFER_MESSAGE = (
@@ -47,7 +47,7 @@ class Dashboard(App):
     TITLE = "AI VIDEO BUILDER"
     CSS = """
     Screen { layout: vertical; }
-    #source, #mode { height: 3; }
+    #source, #mode, #channel-name { height: 3; }
     #status { height: 3; padding: 1; }
     #stats { height: 2; padding: 0 1; }
     #job { height: 5; padding: 0 1; }
@@ -94,6 +94,12 @@ class Dashboard(App):
             value=self.processor.config["footage"]["mode"],
             allow_blank=False,
             id="mode",
+        )
+        yield Input(
+            value=self.processor.config["captions"]["channel_name"],
+            placeholder="Channel name (optional, 8 pt below captions)",
+            max_length=80,
+            id="channel-name",
         )
         yield Static("IDLE", id="status")
         yield Static("", id="stats")
@@ -142,6 +148,7 @@ class Dashboard(App):
         self.query_one("#start", Button).disabled = active or self.exiting
         self.query_one("#source", Select).disabled = active or self.exiting
         self.query_one("#mode", Select).disabled = active or self.exiting
+        self.query_one("#channel-name", Input).disabled = active or self.exiting
         self.query_one("#stop", Button).disabled = not active or state.get(
             "external_process", False
         )
@@ -166,6 +173,7 @@ class Dashboard(App):
                     prepare=self.prepare_baserow if source == "baserow" else None,
                     empty_message=EMPTY_BUFFER_MESSAGE,
                     mode=self.query_one("#mode", Select).value,
+                    channel_name=self.query_one("#channel-name", Input).value,
                 )
                 if not started:
                     log.warning("Processing is already active in this or another process")

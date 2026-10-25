@@ -17,7 +17,13 @@ from pathlib import Path
 from app.cancellation import Cancelled as Cancelled
 from app.cancellation import check_cancel
 from app.captions import write_ass
-from app.config import check_render_config, music_candidates
+from app.config import (
+    DEFAULTS,
+    check_render_config,
+    music_candidates,
+    normalize_channel_name,
+    validate_shake,
+)
 from app.ffmpeg import run_ffmpeg as run_ffmpeg
 from app.footage import probe
 from app.timeline import validate_plan
@@ -26,24 +32,27 @@ log = logging.getLogger("video_builder")
 MUSIC_GAIN_DB = -12.0
 IMAGE_BRIGHTNESS = 0.8
 OVERLAY_OPACITY = 0.7
-SHAKE_PERIOD_X = 2.4
-SHAKE_PERIOD_Y = 3.2
 
 
-def image_motion_filter(width, height, fps, start):
+def image_motion_filter(width, height, fps, start, shake=None):
     """Use small, smooth oscillations at a moderate pace without black edges.
 
-    Work at twice the output resolution for half-pixel crop steps. Three percent
-    overscan leaves room for shallow independent 2.4/3.2-second horizontal/vertical
-    cycles. Global timeline time keeps phase consistent across image cuts.
+    Work at twice output resolution for fine crop steps. Amplitudes are fractions
+    of the available crop travel; cycle periods are seconds. Defaults reproduce
+    the existing motion. Global timeline time keeps phase consistent across cuts.
     """
+    shake = DEFAULTS["shake"] if shake is None else shake
+    validate_shake(shake)
     time = f"(on/{fps}+{start:.9f})"
+    zoom = shake["zoom"] if shake["enabled"] else 1
+    ax = shake["amplitude_x"] if shake["enabled"] else 0
+    ay = shake["amplitude_y"] if shake["enabled"] else 0
     return (
         f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,"
         f"crop={width * 2}:{height * 2},setsar=1,format=gbrp,"
-        "zoompan=z=1.03:"
-        f"x='(iw-iw/zoom)/2*(1+0.35*sin(2*PI*{time}/{SHAKE_PERIOD_X}))':"
-        f"y='(ih-ih/zoom)/2*(1+0.35*sin(2*PI*{time}/{SHAKE_PERIOD_Y}))':"
+        f"zoompan=z={zoom}:"
+        f"x='(iw-iw/zoom)/2*(1+{ax}*sin(2*PI*{time}/{shake['period_x']}))':"
+        f"y='(ih-ih/zoom)/2*(1+{ay}*sin(2*PI*{time}/{shake['period_y']}))':"
         f"d=1:s={width}x{height}:fps={fps},format=gbrp,"
         f"lutrgb=r=val*{IMAGE_BRIGHTNESS}:g=val*{IMAGE_BRIGHTNESS}:b=val*{IMAGE_BRIGHTNESS},"
         "setpts=PTS-STARTPTS"
@@ -112,8 +121,13 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
                 "blend_mode": "difference",
                 "image_brightness": IMAGE_BRIGHTNESS,
                 "overlay_opacity": OVERLAY_OPACITY,
-                "image_motion": "gentle_shake",
-                "image_motion_periods_seconds": {"x": SHAKE_PERIOD_X, "y": SHAKE_PERIOD_Y},
+                "image_motion": "gentle_shake" if config["shake"]["enabled"] else "none",
+                "image_motion_periods_seconds": {
+                    "x": config["shake"]["period_x"],
+                    "y": config["shake"]["period_y"],
+                },
+                "shake": config["shake"],
+                "channel_name": normalize_channel_name(config["captions"]["channel_name"]),
             },
             indent=2,
         )
@@ -142,7 +156,9 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
             else ["-stream_loop", "-1", "-ss", str(interval.offset)]
         )
         vf = (
-            image_motion_filter(video["width"], video["height"], fps, start_frame / fps)
+            image_motion_filter(
+                video["width"], video["height"], fps, start_frame / fps, config["shake"]
+            )
             if source.kind == "image"
             else (
                 f"scale={video['width']}:{video['height']}:force_original_aspect_ratio=increase,"

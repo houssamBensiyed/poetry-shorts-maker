@@ -69,6 +69,24 @@ enqueue can run while an existing snapshot renders.
 
 ## Render composition
 
+The `shake` config section parameterizes the shared `image_motion_filter`:
+enabled, zoom, horizontal/vertical amplitude, and cycle periods in seconds.
+Amplitudes are fractions of available overscan travel, bounded at 1 to prevent
+exposed edges. Defaults preserve the previous effect. Render metadata records
+the exact values. The dev-tool preview invokes this same filter on the session's
+first image without transcription, provider requests, or a full reel. Previews
+share the render lock, freeze session uploads, and stay under
+`temp/ui-test/<session>/shake-previews/`. Export validates the same settings and
+returns a versioned JSON document; it never changes production configuration.
+
+Channel names are normalized and bounded at client boundaries and core render
+validation. `Processor.start(channel_name=...)` snapshots a per-run config, as
+with footage-mode overrides. ASS generation emits one steady channel event per
+sentence, using the caption's full layout to position it underneath and reserve
+safe-area space. Blank names emit no channel events. Both caption and channel
+text are escaped before insertion into ASS. The label is 8 pt at a 1080-wide
+reference output, scaling with width for consistent preview proportions.
+
 `footage.mode` defaults to `image`; `video` uses `composition.videos_directory`,
 and `hybrid` combines that pool with `composition.images_directory`. The console
 selector, `/run?mode=...` and buffer CLI `--mode` pass a per-run override to

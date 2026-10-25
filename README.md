@@ -47,6 +47,20 @@ Use `GET /run?mode=video` or `GET /run?mode=hybrid` for an API run, or
 to that run; plain `/run` uses the configured default. The dev tool has the same
 three modes with separate test uploads stored under `temp/ui-test/`.
 
+An optional channel name appears in small 8 pt text below the captions. Enter it
+in the console or dev tool, pass `channel_name` to `/run`, or use
+`python -m app.buffer run --channel-name "My Channel"`. Names are limited to 80
+characters; an omitted/blank name produces no label. Set `captions.channel_name`
+for a project default. The label follows each full caption block and stays still
+during word reveals. Its size scales with video width (8 pt at 1080 pixels wide).
+
+The dev tool's **Shake editor** adjusts image zoom, movement on each axis and
+cycle times. Upload one image and click **Preview shake** to render six seconds
+without a voice or transcription. **Export shake settings** downloads a JSON file
+you can share to specify the exact movement. Full test reels use those same
+settings. To reuse the export in production, copy its `shake` values into the
+`shake` section of `config.yaml`; the editor does not overwrite project settings.
+
 When upgrading, move your existing still images from `buffer/images/` into
 `assets/images/` (preserve any same-name files). Git does not relocate ignored
 local media on other machines. Keep old UI test resources in `temp/`, outside
