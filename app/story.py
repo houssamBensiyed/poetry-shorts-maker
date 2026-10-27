@@ -121,7 +121,8 @@ def align_lines(lines, words, duration):
         valid = score >= 0.7 and a in mapping and b - 1 in mapping
         start = times[mapping[a]][0] if a in mapping else None
         end = times[mapping[b - 1]][1] if b - 1 in mapping else None
-        if valid and (end <= start or (result and start <= (result[-1].get("start") or -1))):
+        previous_start = result[-1]["start"] if result else None
+        if valid and (end <= start or (previous_start is not None and start <= previous_start)):
             valid = False
         result.append({**line, "start": start, "end": end, "confidence": score, "matched": valid})
     return result
@@ -146,6 +147,7 @@ def run_story(request, config, stop, report, transcriber=None):
     report(stage="Transcribing story")
     transcript = transcriber.transcribe(request.audio, duration, stop, request.work)
     save("transcript.json", asdict(transcript))
+    check_cancel(stop)
     alignment = align_lines(lines, transcript.words, duration)
     save("alignment.json", {"lines": alignment})
     failed = [line["index"] for line in alignment if not line["matched"]]

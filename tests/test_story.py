@@ -13,13 +13,17 @@ from PIL import Image
 from textual.widgets import Input, Select
 
 from api import create_app
+from app.cancellation import Cancelled
 from app.config import load_config
 from app.dashboard import Dashboard
+from app.footage import probe
 from app.logger import configure
 from app.models import Transcript
 from app.processor import Processor
+from app.state import RunLock
 from app.story import align_lines, numbered_frames, parse_lines, run_story, section_request
 from app.timeline import Word
+from app.workflows import build_workflow
 
 
 @pytest.fixture
@@ -66,6 +70,86 @@ def test_parser_and_uncertain_alignment():
     assert [line["start"] for line in result] == [0, 0.4]
     with pytest.raises(ValueError, match="Duplicate"):
         numbered_frames([Path("1.jpg"), Path("1.png")])
+
+
+def test_alignment_rejects_lines_with_the_same_start():
+    result = align_lines(
+        parse_lines("First\nSecond"), [Word("First", 0, 0.2), Word("Second", 0, 0.3)], 1
+    )
+    assert result[0]["matched"]
+    assert not result[1]["matched"]
+
+
+@pytest.mark.parametrize("cancel_at", ["before", "transcription"])
+def test_story_cancellation_never_reaches_renderer(story_section, tmp_path, monkeypatch, cancel_at):
+    directory, config = story_section
+    request = section_request(directory, tmp_path / "out.mp4", tmp_path / "cancelled-work")
+    stop = threading.Event()
+    if cancel_at == "before":
+        stop.set()
+
+    def transcribe(*args):
+        assert cancel_at == "transcription"
+        stop.set()
+        return Transcript(
+            tuple(
+                Word(word, i * 0.2, i * 0.2 + 0.1)
+                for i, word in enumerate("The red sun The blue moon".split())
+            ),
+            (),
+        )
+
+    monkeypatch.setattr(
+        "app.story.render_story", lambda *args: pytest.fail("Do not render after cancellation")
+    )
+    with pytest.raises(Cancelled):
+        run_story(
+            request, config, stop, lambda **values: None, SimpleNamespace(transcribe=transcribe)
+        )
+    assert not request.output.exists()
+    assert request.audio.exists() and all(p.exists() for p in request.frames.values())
+
+
+def test_story_lock_rejects_concurrency_and_allows_repeat(story_section, monkeypatch):
+    directory, config = story_section
+    rendered = []
+    monkeypatch.setattr(
+        "app.story.run_story", lambda request, *args, **kwargs: rendered.append(request)
+    )
+    workflow = build_workflow(config, "story", str(directory))
+    executor = workflow.executor(threading.Event(), lambda **values: None)
+    lock = RunLock(f"story:{directory.resolve()}")
+    assert lock.acquire()
+    try:
+        with pytest.raises(RuntimeError, match="already being rendered"):
+            executor.run(None, None, [])
+        assert not rendered
+    finally:
+        lock.release()
+    assert executor.run(None, None, [])
+    assert executor.run(None, None, [])
+    assert rendered[0].output != rendered[1].output
+    assert rendered[0].work != rendered[1].work
+    assert lock.acquire()
+    lock.release()
+
+
+def test_failed_final_validation_leaves_no_published_or_partial_video(
+    story_section, tmp_path, monkeypatch
+):
+    directory, config = story_section
+    request = section_request(directory, tmp_path / "out.mp4", tmp_path / "failed-output")
+
+    def reject(*args):
+        raise ValueError("Output validation failed")
+
+    monkeypatch.setattr("app.story.validate_output", reject)
+    with pytest.raises(ValueError, match="Output validation failed"):
+        run_story(request, config, threading.Event(), lambda **values: None)
+    assert not request.output.exists()
+    assert not request.output.with_suffix(".partial.mp4").exists()
+    assert (request.work / "alignment.json").exists()
+    assert request.audio.exists() and all(p.exists() for p in request.frames.values())
 
 
 def test_failed_alignment_preserves_diagnostics_and_inputs(story_section, tmp_path, monkeypatch):
@@ -133,6 +217,11 @@ def test_story_real_render_fades_dissolve_duration_and_retention(story_section, 
 
 def test_story_api_routes_without_touching_voice_queue(story_section, monkeypatch):
     directory, c = story_section
+    # Story must render even when none of poetry's optional dependencies exist.
+    c["composition"] = {key: str(directory / "absent" / key) for key in c["composition"]}
+    c["captions"]["font_file"] = str(directory / "absent.ttf")
+    c["baserow"] = {}
+    c["cloudinary"] = {}
     monkeypatch.setenv("VIDEO_BUILDER_API_KEY", "test")
     processor = Processor(c)
     with TestClient(create_app(c, processor)) as client:
@@ -149,6 +238,48 @@ def test_story_api_routes_without_touching_voice_queue(story_section, monkeypatc
         assert state["completed"] == 1, state
         assert Path(state["output"]).is_file()
         assert not Path(c["paths"]["buffer"]).exists()
+
+
+@pytest.mark.parametrize("line_count", [1, 8])
+def test_story_landscape_render_with_fractional_audio_duration(story_section, tmp_path, line_count):
+    directory, config = story_section
+    duration = 12.013
+    config["video"].update(width=320, height=180, fps=24)
+    (directory / "script.txt").write_text("\n".join(f"Scene {i}" for i in range(1, line_count + 1)))
+    if line_count == 1:
+        (directory / "frames" / "2.png").unlink()
+    for i in range(3, line_count + 1):
+        Image.new("RGB", (120, 160), "red" if i % 2 else "blue").save(
+            directory / "frames" / f"{i}.png"
+        )
+    with wave.open(str(directory / "audio.wav"), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(8000)
+        audio.writeframes(b"\0\0" * round(duration * 8000))
+    words = tuple(
+        Word(word, i * 1.5 + j * 0.2, i * 1.5 + j * 0.2 + 0.1)
+        for i in range(line_count)
+        for j, word in enumerate(f"Scene {i + 1}".split())
+    )
+    request = section_request(directory, tmp_path / "landscape.mp4", tmp_path / "landscape-work")
+    output = run_story(
+        request,
+        config,
+        threading.Event(),
+        lambda **values: None,
+        SimpleNamespace(transcribe=lambda *args: Transcript(words, ())),
+    )
+    metadata = probe(output)
+    visual = next(s for s in metadata["streams"] if s["codec_type"] == "video")
+    assert (visual["width"], visual["height"]) == (320, 180)
+    assert int(visual["nb_frames"]) == 289
+    plan = json.loads((request.work / "plan.json").read_text())
+    assert len(plan["footage"]) == line_count
+    assert len([t for t in plan["transitions"] if t["kind"] == "dissolve"]) == line_count - 1
+    assert [Path(item["source"]["path"]).stem for item in plan["footage"]] == [
+        str(i) for i in range(1, line_count + 1)
+    ]
 
 
 def test_story_console(story_section, tmp_path):
