@@ -14,8 +14,8 @@ from app.config import normalize_channel_name
 
 
 def channel_metrics(cap, video):
-    """8 pt at 96 DPI on a 1080-wide reel, scaled with the output resolution."""
-    scale = video["width"] / 1080
+    """8 pt at 96 DPI on a 1080-pixel short edge, independent of orientation."""
+    scale = min(video["width"], video.get("height", video["width"])) / 1080
     size = 8 * 96 / 72 * scale
     gap = 6 * scale
     return size, gap, size * 1.5 + gap
@@ -146,7 +146,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 + channel_gap
             )
             label = (
-                f"{{\\an8\\pos({x},{channel_y})\\fs{channel_size}\\bord{video['width'] / 1080 * 0.5}\\q2}}"
+                f"{{\\an8\\pos({x},{channel_y})\\fs{channel_size}\\bord{min(video['width'], video['height']) / 1080 * 0.5}\\q2}}"
                 + escape(channel)
             )
             # A single persistent label per sentence stays still during word reveals.

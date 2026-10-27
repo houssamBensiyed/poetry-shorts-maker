@@ -28,6 +28,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.cancellation import Cancelled, check_cancel
 from app.config import (
+    ROOT,
     check_composition_config,
     check_render_config,
     check_transcription_config,
@@ -37,9 +38,11 @@ from app.config import (
 )
 from app.ffmpeg import run_ffmpeg
 from app.footage import VIDEO_SUFFIXES, audio_duration, video_duration
+from app.settings import save_shake_settings
 from app.timeline import Source, build_plan, sentences_from_words
 from app.transcription import Transcriber
 from app.video_builder import image_motion_filter, render
+from app.video_format import VIDEO_FORMATS, AspectRatio, with_video_format
 
 STATIC = Path(__file__).parent / "static"
 IMAGE_LIMIT = 20 * 1024 * 1024
@@ -49,7 +52,7 @@ log = logging.getLogger(__name__)
 
 
 class ShakeOptions(BaseModel):
-    """Portable settings shared by preview, export and the actual renderer."""
+    """Validated settings shared by preview, project defaults and the renderer."""
 
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
     enabled: bool = True
@@ -71,6 +74,7 @@ class RunOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     size: Literal["preview", "full"] = "preview"
+    aspect_ratio: AspectRatio | None = None
     style: Literal["poetry", "story"] = "poetry"
     script: str = Field(default="", max_length=100000)
     mode: Literal["image", "video", "hybrid"] = "image"
@@ -136,9 +140,13 @@ class Session:
                 self.run["progress"] = progress
 
 
-def create_app(config=None):
+def create_app(config=None, *, config_path=None):
     """Create an isolated test service using the existing renderer and planner."""
-    config = copy.deepcopy(config if config is not None else load_config())
+    if config is None:
+        config_path = Path(config_path or ROOT / "config.yaml").resolve()
+        config = load_config(config_path)
+    config = copy.deepcopy(config)
+    settings_path = Path(config_path).resolve() if config_path is not None else None
     sessions = {}
     render_lock = threading.Lock()
 
@@ -214,21 +222,48 @@ def create_app(config=None):
             "speech_error": speech_error,
             "speech_model": config["whisper"]["model"],
             "full_size": f"{config['video']['width']} × {config['video']['height']}",
-            "preview_size": f"360 × {max(2, round(config['video']['height'] * 360 / config['video']['width'] / 2) * 2)}",
+            "preview_size": " × ".join(
+                str(with_video_format(config, preview=True)["video"][key])
+                for key in ("width", "height")
+            ),
             "fps": config["video"]["fps"],
             "shake": config["shake"],
             "channel_name": config["captions"]["channel_name"],
+            "project_settings_writable": settings_path is not None,
+            "video_formats": {
+                ratio or "default": {
+                    size: {
+                        key: with_video_format(config, ratio, preview=size == "preview")["video"][
+                            key
+                        ]
+                        for key in ("width", "height")
+                    }
+                    for size in ("full", "preview")
+                }
+                for ratio in (None, *VIDEO_FORMATS)
+            },
         }
 
-    @app.post("/api/shake/export")
-    def export_shake(options: ShakeOptions):
-        return JSONResponse(
-            {"version": 1, "shake": options.model_dump()},
-            headers={"Content-Disposition": 'attachment; filename="shake-settings.json"'},
-        )
+    @app.post("/api/shake/apply")
+    def apply_shake(options: ShakeOptions):
+        if settings_path is None:
+            raise HTTPException(409, "No project configuration file is attached to this server.")
+        if not render_lock.acquire(blocking=False):
+            raise HTTPException(409, "Wait for the current preview or render to finish.")
+        try:
+            try:
+                save_shake_settings(settings_path, options.model_dump())
+            except (ValueError, OSError) as exc:
+                raise HTTPException(400, f"Could not save project settings: {exc}") from exc
+            config["shake"] = options.model_dump()
+            return {"shake": config["shake"], "message": "Shake settings saved to the project."}
+        finally:
+            render_lock.release()
 
     @app.post("/api/sessions/{session_id}/shake-preview")
-    def preview_shake(session_id: str, options: ShakeOptions):
+    def preview_shake(
+        session_id: str, options: ShakeOptions, aspect_ratio: AspectRatio | None = None
+    ):
         session = get_session(session_id)
         with session.lock:
             session.available()
@@ -243,8 +278,8 @@ def create_app(config=None):
             image_path = media_path(session, session.images[0])
         preview_id = uuid.uuid4().hex
         work = session.directory / "shake-previews" / preview_id
-        width = 360
-        height = max(2, round(config["video"]["height"] * width / config["video"]["width"] / 2) * 2)
+        preview_video = with_video_format(config, aspect_ratio, preview=True)["video"]
+        width, height = preview_video["width"], preview_video["height"]
         fps = config["video"]["fps"]
         try:
             work.mkdir(parents=True)
@@ -286,6 +321,7 @@ def create_app(config=None):
                     "id": preview_id,
                     "shake": options.model_dump(),
                     "duration": 6,
+                    "aspect_ratio": aspect_ratio,
                 }
                 return session.snapshot()
         except (ValueError, RuntimeError, OSError) as exc:
@@ -609,19 +645,15 @@ def create_app(config=None):
                 )
             if not render_lock.acquire(blocking=False):
                 raise HTTPException(409, "Another test is running. Wait for it to finish.")
-            run_config = copy.deepcopy(config)
+            run_config = with_video_format(
+                config, options.aspect_ratio, preview=options.size == "preview"
+            )
             # The test seed reproduces both image selection and the music choice.
             run_config["footage"]["random_seed"] = options.seed
             run_config["footage"]["mode"] = options.mode
             run_config["captions"]["channel_name"] = options.channel_name
             if options.shake is not None:
                 run_config["shake"] = options.shake.model_dump()
-            if options.size == "preview":
-                scale = 360 / config["video"]["width"]
-                height = max(2, round(config["video"]["height"] * scale / 2) * 2)
-                run_config["video"].update(width=360, height=height, preset="ultrafast")
-                for field in ("font_size", "safe_margin", "outline_width"):
-                    run_config["captions"][field] = max(1, round(config["captions"][field] * scale))
             run_id = uuid.uuid4().hex
             session.stop.clear()
             session.run = {

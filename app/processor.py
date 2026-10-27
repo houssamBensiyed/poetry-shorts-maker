@@ -107,6 +107,7 @@ class Processor:
         channel_name: str | None = None,
         style: str = "poetry",
         section: str | None = None,
+        aspect_ratio: str | None = None,
     ) -> bool:
         """Acquire queue ownership and launch a non-daemon worker thread.
 
@@ -124,17 +125,24 @@ class Processor:
             if self.closed or self.refreshing or self.active:
                 return False
             services = self.services
+            run_config = self.config
             if style not in ("poetry", "story"):
                 raise ValueError("Style must be poetry or story")
-            if mode is not None or channel_name is not None or style == "story":
+            if (
+                mode is not None
+                or channel_name is not None
+                or style == "story"
+                or aspect_ratio is not None
+            ):
                 if mode is not None and mode not in ("image", "video", "hybrid"):
                     raise ValueError("Footage mode must be image, video or hybrid")
                 if not self.default_services:
                     raise ValueError("Mode overrides require the default local composition")
                 from app.config import normalize_channel_name
+                from app.video_format import with_video_format
                 from app.workflows import build_workflow
 
-                run_config = deepcopy(self.config)
+                run_config = with_video_format(self.config, aspect_ratio)
                 if mode is not None:
                     run_config["footage"]["mode"] = mode
                 if channel_name is not None:
@@ -155,6 +163,8 @@ class Processor:
                     render_progress=None,
                     mode=mode or self.config["footage"]["mode"],
                     style=style,
+                    width=run_config["video"]["width"],
+                    height=run_config["video"]["height"],
                     channel_name=channel_name
                     if channel_name is not None
                     else self.config["captions"]["channel_name"],

@@ -215,7 +215,10 @@ def test_story_real_render_fades_dissolve_duration_and_retention(story_section, 
     assert frames[25, 120, 80, 2] > 240
 
 
-def test_story_api_routes_without_touching_voice_queue(story_section, monkeypatch):
+@pytest.mark.parametrize("aspect_ratio,dimensions", [(None, (160, 240)), ("16:9", (1920, 1080))])
+def test_story_api_routes_without_touching_voice_queue(
+    story_section, monkeypatch, aspect_ratio, dimensions
+):
     directory, c = story_section
     # Story must render even when none of poetry's optional dependencies exist.
     c["composition"] = {key: str(directory / "absent" / key) for key in c["composition"]}
@@ -227,16 +230,27 @@ def test_story_api_routes_without_touching_voice_queue(story_section, monkeypatc
     with TestClient(create_app(c, processor)) as client:
         headers = {"X-API-Key": "test"}
         assert client.get("/run?style=story", headers=headers).status_code == 422
+        params = {"style": "story", "section": str(directory)}
+        if aspect_ratio:
+            params["aspect_ratio"] = aspect_ratio
         assert (
             client.get(
-                "/run", params={"style": "story", "section": str(directory)}, headers=headers
+                "/run", params={**params, "aspect_ratio": "invalid"}, headers=headers
             ).status_code
-            == 202
+            == 422
         )
+        assert client.get("/run", params=params, headers=headers).status_code == 202
         processor.thread.join(timeout=20)
         state = client.get("/status", headers=headers).json()
         assert state["completed"] == 1, state
         assert Path(state["output"]).is_file()
+        visual = next(s for s in probe(state["output"])["streams"] if s["codec_type"] == "video")
+        assert (visual["width"], visual["height"]) == dimensions
+        assert (state["width"], state["height"]) == dimensions
+        assert (processor.config["video"]["width"], processor.config["video"]["height"]) == (
+            160,
+            240,
+        )
         assert not Path(c["paths"]["buffer"]).exists()
 
 

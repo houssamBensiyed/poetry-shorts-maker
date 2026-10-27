@@ -104,16 +104,26 @@ exposed edges. Defaults preserve the previous effect. Render metadata records
 the exact values. The dev-tool preview invokes this same filter on the session's
 first image without transcription, provider requests, or a full reel. Previews
 share the render lock, freeze session uploads, and stay under
-`temp/ui-test/<session>/shake-previews/`. Export validates the same settings and
-returns a versioned JSON document; it never changes production configuration.
+`temp/ui-test/<session>/shake-previews/`. The explicit Apply action validates and
+atomically saves the shake section to a server-selected project config path via
+`app/settings.py`, then updates the devtool's in-memory defaults. A config lock
+serializes saves; the render lock blocks changes during active work. Isolated
+injected servers cannot save unless given an explicit config path. Already-running
+console/API instances keep their loaded settings until restarted.
+
+`app/video_format.py` resolves per-run aspect-ratio presets and preview dimensions
+for both builders. Console, HTTP and devtools forward the user's selection;
+omission preserves configured dimensions. Each run receives a private snapshot,
+with captions scaled by the short edge. Previews use a 360-pixel short edge and
+full presets use 1080. Renderers read width/height without a fixed orientation.
 
 Channel names are normalized and bounded at client boundaries and core render
 validation. `Processor.start(channel_name=...)` snapshots a per-run config, as
 with footage-mode overrides. ASS generation emits one steady channel event per
 sentence, using the caption's full layout to position it underneath and reserve
 safe-area space. Blank names emit no channel events. Both caption and channel
-text are escaped before insertion into ASS. The label is 8 pt at a 1080-wide
-reference output, scaling with width for consistent preview proportions.
+text are escaped before insertion into ASS. The label is 8 pt at a 1080-pixel
+short edge, scaling consistently across orientations and previews.
 
 `footage.mode` defaults to `image`; `video` uses `composition.videos_directory`,
 and `hybrid` combines that pool with `composition.images_directory`. The console

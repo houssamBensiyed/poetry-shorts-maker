@@ -194,11 +194,16 @@ the configured default; pass an empty string to suppress that default. Invalid
 names return HTTP 422 before starting a run. The console and dev tool also offer
 an optional channel-name field. The CLI accepts `--channel-name "My Channel"`.
 The label renders only while a caption is present, below its full multiline
-layout, at 8 pt (96 DPI, 10.67 pixels on a 1080-wide output), scaled with output
-width. Caption layout reserves room for it at top, center or bottom positions.
+layout, at 8 pt (96 DPI, 10.67 pixels on a 1080-pixel short edge), scaled with the
+short edge. Caption layout reserves room for it at top, center or bottom positions.
 
-Use the dev-tool shake preview/export to tune movement. Exported `shake` keys map
-directly to YAML settings above. Zero movement amplitudes hold the image steady
+Pass `aspect_ratio=9:16`, `16:9`, `1:1`, or `4:5` to `/run` for a per-run format
+override in either workflow. Omission uses configured width/height. The console
+and devtool expose the same choices; invalid API formats return HTTP 422.
+
+Use the dev-tool shake preview and **Apply to project** to tune movement and save
+the `shake` section directly to `config.yaml`. Restart running console/API processes
+to reload saved settings. Zero movement amplitudes hold the image steady
 at the chosen zoom; `enabled: false` removes both motion and overscan. At zoom 1
 there is no spare crop area, so movement is zero. Video clips retain natural motion.
 

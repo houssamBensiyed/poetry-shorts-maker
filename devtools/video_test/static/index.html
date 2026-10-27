@@ -226,11 +226,12 @@
                 <p class="field-help">Smaller cycle times mean faster movement. Movement is a percentage of the space created by zoom. At 100% zoom there is no room to shake. Disabling shake removes the extra zoom too.</p>
                 <div class="settings-row">
                   <button id="shake-preview-button" class="button" type="button">Preview shake · 6 seconds</button>
-                  <button id="shake-export" class="button" type="button">Export shake settings</button>
+                  <button id="shake-apply" class="button" type="button">Apply to project</button>
                 </div>
                 <p id="shake-status" class="field-help" role="status">Upload an image to preview. No voice recording or transcription is needed.</p>
                 <video id="shake-player" controls muted playsinline hidden></video>
-                <p class="field-help">Export downloads shake-settings.json. Share that file to communicate your exact settings. These settings also apply when you click Run test.</p>
+                <p id="shake-apply-status" class="field-help" role="status"></p>
+                <p class="field-help">Apply saves the shake settings to config.yaml and updates new devtool runs immediately. Restart an already-running console or API to load the saved settings.</p>
               </section>
               <section class="card" aria-labelledby="voice-heading">
                 <div class="card-heading">
@@ -298,6 +299,14 @@
                   <span class="muted">For this run only</span>
                 </div>
                 <div class="settings-row">
+                  <label
+                    >Aspect ratio<select id="aspect-ratio">
+                      <option value="default">Project default</option>
+                      <option value="9:16">9:16 · Portrait</option>
+                      <option value="16:9">16:9 · Landscape</option>
+                      <option value="1:1">1:1 · Square</option>
+                      <option value="4:5">4:5 · Portrait</option>
+                    </select></label>
                   <label
                     >Video size<select id="size">
                       <option value="preview">360 × 640 · Fast preview</option>
@@ -396,7 +405,7 @@
               <section class="card output-card">
                 <div class="card-heading">
                   <h2>Video preview</h2>
-                  <span class="ratio-badge">9:16</span>
+                  <span class="ratio-badge" id="ratio-badge">—</span>
                 </div>
                 <div class="video-frame" id="video-frame">
                   <div class="preview-grid"></div>

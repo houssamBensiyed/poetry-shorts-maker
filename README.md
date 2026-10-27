@@ -52,14 +52,22 @@ in the console or dev tool, pass `channel_name` to `/run`, or use
 `python -m app.buffer run --channel-name "My Channel"`. Names are limited to 80
 characters; an omitted/blank name produces no label. Set `captions.channel_name`
 for a project default. The label follows each full caption block and stays still
-during word reveals. Its size scales with video width (8 pt at 1080 pixels wide).
+during word reveals. Its size scales with the short edge (8 pt at 1080 pixels).
+
+Choose the output aspect ratio in the console or dev tool: **9:16** (1080×1920),
+**16:9** (1920×1080), **1:1** (1080×1080), or **4:5** (1080×1350).
+**Project default** keeps the custom width/height in `config.yaml`. Both poetry
+and story support these choices. API callers pass `aspect_ratio=16:9` to `/run`.
+The buffer CLI accepts `python -m app.buffer run --aspect-ratio 16:9`.
+Format selections apply only to that run; devtool previews use a 360-pixel short
+edge, such as 640×360 for landscape. Full renders use the listed dimensions.
 
 The dev tool's **Shake editor** adjusts image zoom, movement on each axis and
 cycle times. Upload one image and click **Preview shake** to render six seconds
-without a voice or transcription. **Export shake settings** downloads a JSON file
-you can share to specify the exact movement. Full test reels use those same
-settings. To reuse the export in production, copy its `shake` values into the
-`shake` section of `config.yaml`; the editor does not overwrite project settings.
+without a voice or transcription. **Apply to project** saves the settings directly
+to the `shake` section of `config.yaml` and updates new devtool runs immediately.
+Restart an already-running console or API to load the saved project settings.
+Changing controls alone affects test runs; saving requires clicking Apply.
 
 When upgrading, move your existing still images from `buffer/images/` into
 `assets/images/` (preserve any same-name files). Git does not relocate ignored
@@ -174,8 +182,8 @@ for closely spaced lines. Opening/closing black fades also last up to 0.4 second
 Audio remains continuous; final duration differs by at most one output frame.
 Story uses narration and full-brightness still frames. Poetry's music, grain,
 shake, captions and channel-label controls are not applied to this story preset.
-Resolution and frame rate use the existing `video` settings; set width/height to
-1920/1080 for landscape output. Story never consumes the poetry voice queue or
+Choose landscape in any client or pass `aspect_ratio=16:9` to the API; omitted
+formats and the frame rate use the `video` settings. Story never consumes the poetry voice queue or
 contacts Baserow/Cloudinary. Section inputs and diagnostic files are retained.
 
 ## Video composition

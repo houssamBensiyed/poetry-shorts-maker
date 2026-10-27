@@ -203,6 +203,7 @@ def main():
     import argparse
 
     from app.config import load_config
+    from app.video_format import VIDEO_FORMATS
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["add", "run"])
@@ -210,11 +211,18 @@ def main():
     parser.add_argument("--config", type=Path)
     parser.add_argument("--channel-name", help="Optional small label below captions")
     parser.add_argument("--mode", choices=["image", "video", "hybrid"], help="Footage mode for run")
+    parser.add_argument("--aspect-ratio", choices=list(VIDEO_FORMATS), help="Output format for run")
     parser.add_argument("--watch", action="store_true", help="Keep checking the voice buffer")
     args = parser.parse_args()
     config = load_config(args.config)
     if args.command == "add":
-        if args.audio is None or args.watch or args.mode or args.channel_name is not None:
+        if (
+            args.audio is None
+            or args.watch
+            or args.mode
+            or args.channel_name is not None
+            or args.aspect_ratio
+        ):
             parser.error("add requires an audio file and does not accept rendering options")
         print(VoiceBuffer(config["paths"]["buffer"]).add(args.audio))
         return
@@ -235,7 +243,9 @@ def main():
     previous = signal.signal(signal.SIGTERM, request_stop)
     try:
         while not shutdown.is_set():
-            if not processor.start(mode=args.mode, channel_name=args.channel_name):
+            if not processor.start(
+                mode=args.mode, channel_name=args.channel_name, aspect_ratio=args.aspect_ratio
+            ):
                 raise SystemExit("Voice buffer is already being processed")
             processor.thread.join()
             status = processor.status()

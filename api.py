@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from app.config import load_config, normalize_channel_name
 from app.logger import configure
 from app.processor import Processor
+from app.video_format import AspectRatio
 
 
 def create_app(config=None, processor=None):
@@ -69,6 +70,7 @@ def create_app(config=None, processor=None):
         channel_name: str | None = Query(default=None, max_length=80),
         style: Literal["poetry", "story"] = "poetry",
         section: str | None = None,
+        aspect_ratio: AspectRatio | None = None,
     ):
         """Request a manual run and return an uncached acknowledgement.
 
@@ -77,6 +79,8 @@ def create_app(config=None, processor=None):
         Because this GET has a side effect, it is intended for explicit API triggers.
         """
         overrides = {}
+        if aspect_ratio is not None:
+            overrides["aspect_ratio"] = aspect_ratio
         if style == "story":
             if not section:
                 raise HTTPException(422, "Story style requires a section directory")

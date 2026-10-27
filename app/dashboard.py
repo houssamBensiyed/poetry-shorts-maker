@@ -14,6 +14,8 @@ from textual.containers import Grid, Horizontal
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, ProgressBar, RichLog, Select, Static
 
+from app.video_format import VIDEO_FORMATS
+
 log = logging.getLogger("video_builder")
 EMPTY_BUFFER_MESSAGE = (
     "The local voice buffer is empty. Add voice files to the buffer or choose "
@@ -47,6 +49,8 @@ class Dashboard(App):
     TITLE = "AI VIDEO BUILDER"
     CSS = """
     Screen { layout: vertical; }
+    #format-controls { height: 3; }
+    #format-controls Select { width: 1fr; }
     #source, #mode, #channel-name { height: 3; }
     #status { height: 1; padding: 0 1; }
     #stats { height: 1; padding: 0 1; }
@@ -80,12 +84,20 @@ class Dashboard(App):
         appear literally instead of being interpreted as terminal formatting.
         """
         yield Header()
-        yield Select(
-            [("Poetry — random footage", "poetry"), ("Story — numbered frames", "story")],
-            value="poetry",
-            allow_blank=False,
-            id="style",
-        )
+        with Horizontal(id="format-controls"):
+            yield Select(
+                [("Poetry — random footage", "poetry"), ("Story — numbered frames", "story")],
+                value="poetry",
+                allow_blank=False,
+                id="style",
+            )
+            yield Select(
+                [("Size — project default", "default")]
+                + [(f"{ratio} · {w} × {h}", ratio) for ratio, (w, h) in VIDEO_FORMATS.items()],
+                value="default",
+                allow_blank=False,
+                id="aspect-ratio",
+            )
         yield Input(
             placeholder="Story section directory (script.txt, audio.*, frames/)", id="section"
         )
@@ -157,6 +169,7 @@ class Dashboard(App):
         self.query_one("#start", Button).disabled = active or self.exiting
         self.query_one("#source", Select).disabled = active or self.exiting
         self.query_one("#style", Select).disabled = active or self.exiting
+        self.query_one("#aspect-ratio", Select).disabled = active or self.exiting
         self.query_one("#section", Input).disabled = active or self.exiting
         story = self.query_one("#style", Select).value == "story"
         self.query_one("#section", Input).display = story
@@ -190,6 +203,9 @@ class Dashboard(App):
                     prepare=self.prepare_baserow if source == "baserow" and not story else None,
                     style="story" if story else "poetry",
                     section=self.query_one("#section", Input).value if story else None,
+                    aspect_ratio=None
+                    if self.query_one("#aspect-ratio", Select).value == "default"
+                    else self.query_one("#aspect-ratio", Select).value,
                     empty_message=EMPTY_BUFFER_MESSAGE,
                     mode=self.query_one("#mode", Select).value,
                     channel_name=self.query_one("#channel-name", Input).value,

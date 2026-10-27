@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -190,7 +191,10 @@ def client(tmp_path, monkeypatch):
         "app.transcription.httpx.Client",
         lambda **kwargs: real_client(transport=httpx.MockTransport(handle), **kwargs),
     )
-    with TestClient(create_app(config), headers=HEADERS) as client:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    with TestClient(create_app(config, config_path=config_path), headers=HEADERS) as client:
+        client.config_path = config_path
         client.whisper_requests = requests
         client.whisper_response = response
         client.config = config
@@ -256,7 +260,8 @@ def test_static_and_local_request_guard(client):
     assert client.get("/.env").status_code == 404
 
 
-def test_story_devtool_alignment_and_render(client):
+@pytest.mark.parametrize("aspect_ratio,dimensions", [(None, (180, 320)), ("16:9", (640, 360))])
+def test_story_devtool_alignment_and_render(client, aspect_ratio, dimensions):
     base = session(client)
     for index in range(1, 4):
         assert (
@@ -273,12 +278,14 @@ def test_story_devtool_alignment_and_render(client):
         json={
             "style": "story",
             "script": "First test sentence.\nAnother image appears.\nLast words here.",
-            "size": "full",
+            "size": "preview" if aspect_ratio else "full",
+            "aspect_ratio": aspect_ratio,
         },
     )
     assert response.status_code == 202, response.text
     state = wait(client, base)
     assert state["run"]["status"] == "passed", state
+    assert (state["run"]["width"], state["run"]["height"]) == dimensions
     alignment = client.get(f"{base}/alignment").json()
     assert [line["start"] for line in alignment["lines"]] == [0, 0.8, 1.5]
 
@@ -408,7 +415,7 @@ def test_real_render_from_buffer_and_video_download(client):
     assert output.is_file()
 
 
-def test_shake_export_and_preview_need_only_one_image(client):
+def test_shake_apply_and_preview_need_only_one_image(client):
     base = session(client)
     settings = {
         "enabled": False,
@@ -418,12 +425,13 @@ def test_shake_export_and_preview_need_only_one_image(client):
         "period_x": 1.0,
         "period_y": 2.0,
     }
-    response = client.post("/api/shake/export", json=settings)
-    assert (
-        response.status_code == 200
-        and "shake-settings.json" in response.headers["content-disposition"]
-    )
-    assert response.json() == {"version": 1, "shake": settings}
+    response = client.post("/api/shake/apply", json=settings)
+    assert response.status_code == 200
+    assert response.json()["shake"] == settings
+    assert load_config(client.config_path)["shake"] == settings
+    assert client.get("/api/info").json()["shake"] == settings
+    with TestClient(create_app(config_path=client.config_path)) as restarted:
+        assert restarted.get("/api/info").json()["shake"] == settings
     assert client.post(f"{base}/shake-preview", json=settings).status_code == 400
     assert client.post(f"{base}/media/image", content=image_bytes()).status_code == 201
     response = client.post(f"{base}/shake-preview", json=settings)
@@ -439,6 +447,57 @@ def test_shake_export_and_preview_need_only_one_image(client):
 
 
 @pytest.mark.parametrize(
+    "aspect_ratio,dimensions", [("16:9", (640, 360)), ("1:1", (360, 360)), ("4:5", (360, 450))]
+)
+def test_poetry_format_and_saved_shake_used_by_next_run(client, aspect_ratio, dimensions):
+    settings = client.config["shake"] | {"period_x": 1.2, "amplitude_x": 0.15}
+    assert client.post("/api/shake/apply", json=settings).status_code == 200
+    base = session(client)
+    fill(client, base)
+    preview = client.post(
+        f"{base}/shake-preview", params={"aspect_ratio": aspect_ratio}, json=settings
+    )
+    assert preview.status_code == 200
+    assert preview.json()["shake_preview"]["aspect_ratio"] == aspect_ratio
+    assert (
+        client.post(
+            f"{base}/run", json={"aspect_ratio": aspect_ratio, "channel_name": "Example"}
+        ).status_code
+        == 202
+    )
+    run = wait(client, base)["run"]
+    assert run["status"] == "passed", run
+    assert (run["width"], run["height"]) == dimensions
+    assert run["composition"]["shake"] == settings
+    output = (
+        Path(client.config["paths"]["temp"])
+        / "ui-test"
+        / base.rsplit("/", 1)[1]
+        / "runs"
+        / run["id"]
+        / "video.mp4"
+    )
+    visual = next(s for s in probe(output)["streams"] if s["codec_type"] == "video")
+    assert (visual["width"], visual["height"]) == dimensions
+
+
+def test_failed_apply_keeps_server_settings_and_requires_explicit_config_path(client, monkeypatch):
+    before = client.get("/api/info").json()["shake"]
+    original = client.config_path.read_bytes()
+
+    def fail(*args):
+        raise OSError("Cannot write configuration")
+
+    monkeypatch.setattr("devtools.video_test.server.save_shake_settings", fail)
+    assert client.post("/api/shake/apply", json={"period_x": 1.0}).status_code == 400
+    assert client.get("/api/info").json()["shake"] == before
+    assert client.config_path.read_bytes() == original
+    with TestClient(create_app(client.config), headers=HEADERS) as isolated:
+        assert not isolated.get("/api/info").json()["project_settings_writable"]
+        assert isolated.post("/api/shake/apply", json={}).status_code == 409
+
+
+@pytest.mark.parametrize(
     "field,value",
     [
         ("period_x", 0),
@@ -448,10 +507,12 @@ def test_shake_export_and_preview_need_only_one_image(client):
         ("zoom", "1.03:evil"),
     ],
 )
-def test_invalid_shake_cannot_reach_preview_export_or_render(client, field, value):
+def test_invalid_shake_cannot_reach_preview_apply_or_render(client, field, value):
     base = session(client)
     settings = {field: value}
-    assert client.post("/api/shake/export", json=settings).status_code == 422
+    original = client.config_path.read_bytes()
+    assert client.post("/api/shake/apply", json=settings).status_code == 422
+    assert client.config_path.read_bytes() == original
     assert client.post(f"{base}/shake-preview", json=settings).status_code == 422
     assert client.post(f"{base}/run", json={"shake": settings}).status_code == 422
     assert client.post(f"{base}/run", json={"channel_name": "x" * 81}).status_code == 422
@@ -550,6 +611,7 @@ def test_running_inputs_are_frozen_and_stop_releases_worker(client, monkeypatch)
     assert started.wait(3)
     assert client.post(f"{base}/run", json={}).status_code == 409
     assert client.post(f"{other}/run", json={}).status_code == 409
+    assert client.post("/api/shake/apply", json={}).status_code == 409
     assert client.delete(f"{base}/media/{state['images'][0]['id']}").status_code == 409
     assert client.post(f"{base}/media/audio", content=audio_bytes()).status_code == 409
     assert client.post(f"{base}/stop").status_code == 200

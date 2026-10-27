@@ -119,6 +119,11 @@ async function api(path, options = {}) {
   return result;
 }
 function updateChecks() {
+  const formats = info?.video_formats?.[$("aspect-ratio").value];
+  if (formats) {
+    $("full-size").textContent = `${formats.full.width} × ${formats.full.height} · Full size`;
+    $("size").options[0].textContent = `${formats.preview.width} × ${formats.preview.height} · Fast preview`;
+  }
   const story = $("style").value === "story";
   $("story-inputs").hidden = !story;
   $("shake-editor").hidden = story;
@@ -150,7 +155,7 @@ function updateChecks() {
   $("alignment-link").hidden = !story || !session.run;
   $("alignment-link").href = `${base()}/alignment`;
   document.body.classList.toggle("busy", locked);
-  for (const id of ["image-drop", "video-drop", "audio-drop", "remove-audio", "mode", "size", "seed", "channel-name", ...shakeInputs])
+  for (const id of ["image-drop", "video-drop", "audio-drop", "remove-audio", "mode", "size", "aspect-ratio", "seed", "channel-name", ...shakeInputs])
     $(id).disabled = locked;
   $("mode").disabled = locked || story;
   $("channel-name").disabled = locked || story;
@@ -162,7 +167,12 @@ function updateChecks() {
   }
   $("video-drop").disabled = locked || session.videos.length >= 10;
   $("shake-preview-button").disabled = locked || !connected || !info?.ffmpeg || !session.images.length || !validShake();
-  $("shake-export").disabled = locked || !connected || !validShake();
+  $("shake-apply").disabled = locked || !connected || !validShake() || !info?.project_settings_writable;
+  $("shake-apply-status").textContent = !info?.project_settings_writable
+    ? "Project saving is unavailable for this isolated test server."
+    : JSON.stringify(info.shake) === JSON.stringify(shakeSettings())
+      ? "These settings match the saved project defaults."
+      : "Unsaved changes. Apply to project to save these settings.";
   $("shake-zoom-value").textContent = `${$("shake-zoom").value}%`;
   $("shake-x-value").textContent = `${$("shake-x").value}%`;
   $("shake-y-value").textContent = `${$("shake-y").value}%`;
@@ -175,7 +185,7 @@ function updateChecks() {
   $("shake-status").textContent = busy ? "Working…" : !validShake()
     ? "Enter cycle times between 0.2 and 30 seconds."
     : !session.images.length ? "Upload one image to preview its shake. No voice or transcription needed."
-    : preview ? (JSON.stringify(preview.shake) === JSON.stringify(shakeSettings())
+    : preview ? (JSON.stringify(preview.shake) === JSON.stringify(shakeSettings()) && preview.aspect_ratio === selectedAspectRatio()
       ? "Preview matches the current settings." : "Settings changed — preview again to see the new movement.")
     : "Ready to preview six seconds of image motion.";
   document
@@ -367,16 +377,22 @@ function renderRun() {
     : run?.status === "failed"
       ? "See the error in Test progress."
       : "Run a test to see the result.";
+  const dimensions = info?.video_formats?.[$("aspect-ratio").value]?.[$("size").value];
   $("resolution").textContent = run
     ? `${run.width} × ${run.height}`
-    : $("size").value === "full"
-      ? info?.full_size
-      : info?.preview_size || "360 × 640";
+    : dimensions ? `${dimensions.width} × ${dimensions.height}` : "—";
   $("fps").textContent = `${run?.fps || info?.fps || 30} fps`;
   $("duration").textContent = duration(
     run?.duration ?? session.audio?.duration,
   );
   if (run) $("video-frame").style.aspectRatio = `${run.width}/${run.height}`;
+  else if (dimensions) $("video-frame").style.aspectRatio = `${dimensions.width}/${dimensions.height}`;
+  const displayed = run || dimensions;
+  if (displayed) {
+    let a = displayed.width, b = displayed.height;
+    while (b) [a, b] = [b, a % b];
+    $("ratio-badge").textContent = `${displayed.width / a}:${displayed.height / a}`;
+  }
 }
 function updateSoundStatus() {
   const player = $("video-player");
@@ -512,13 +528,17 @@ $("remove-audio").addEventListener(
   "click",
   () => session.audio && removeMedia(session.audio.id),
 );
-for (const id of ["style", "story-script", "mode", "size", "seed", "channel-name", ...shakeInputs]) $(id).addEventListener("input", render);
+function selectedAspectRatio() {
+  return $("aspect-ratio").value === "default" ? null : $("aspect-ratio").value;
+}
+for (const id of ["style", "story-script", "mode", "size", "aspect-ratio", "seed", "channel-name", ...shakeInputs]) $(id).addEventListener("input", render);
 $("shake-preview-button").addEventListener("click", async () => {
   busy = true;
   clearError();
   render();
   try {
-    session = await api(`${base()}/shake-preview`, {
+    const query = selectedAspectRatio() ? `?aspect_ratio=${encodeURIComponent(selectedAspectRatio())}` : "";
+    session = await api(`${base()}/shake-preview${query}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(shakeSettings()),
     });
@@ -529,20 +549,18 @@ $("shake-preview-button").addEventListener("click", async () => {
     render();
   }
 });
-$("shake-export").addEventListener("click", async () => {
+$("shake-apply").addEventListener("click", async () => {
+  busy = true;
   clearError();
+  render();
   try {
-    const settings = await api("/api/shake/export", {
+    const settings = await api("/api/shake/apply", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(shakeSettings()),
     });
-    const url = URL.createObjectURL(new Blob([JSON.stringify(settings, null, 2) + "\n"], { type: "application/json" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "shake-settings.json";
-    link.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    info.shake = settings.shake;
   } catch (error) { showError(error); }
+  finally { busy = false; render(); }
 });
 $("run").addEventListener("click", async () => {
   if ($("run").disabled) return;
@@ -555,6 +573,7 @@ $("run").addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         size: $("size").value,
+        aspect_ratio: selectedAspectRatio(),
         mode: $("mode").value,
         style: $("style").value,
         script: $("story-script").value,

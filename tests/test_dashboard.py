@@ -53,9 +53,11 @@ def test_local_choice_rejects_empty_buffer_without_using_providers(tmp_path, mon
             assert app.query_one("#source", Select).value == "local"
             assert app.query_one("#start", Button).disabled is False
             assert app.query_one("#logs", RichLog).lines
+            app.query_one("#aspect-ratio", Select).value = "16:9"
             await pilot.click("#start")
             await finish_run(p, pilot)
             assert p.status()["status"] == "error"
+            assert (p.status()["width"], p.status()["height"]) == (1920, 1080)
             assert p.status()["pending"] == 0
             assert "buffer is empty" in p.status()["error"]
             assert "Add voice files" in p.status()["error"] and "Baserow" in p.status()["error"]

@@ -31,7 +31,8 @@ longer recordings can be submitted as section directories through console/API.
    clips are probed and saved unchanged in the temporary session directory.
 2. Upload one voice recording. It is saved unchanged in the temporary session and
    checked with the project's FFprobe helper. You can listen to it in the UI.
-3. Choose fast preview or the full video size from `config.yaml`.
+3. Choose an aspect ratio (9:16, 16:9, 1:1, 4:5 or project default), then fast
+   preview or full size. Preview uses a 360-pixel short edge; landscape is 640×360.
 4. Click **Run test**. Whisper transcribes the voice, then the builder creates the video.
 5. Watch progress, play/download the validated MP4, or save the JSON test report.
 
@@ -43,14 +44,16 @@ it needs no voice, captions, music, overlay or transcription credentials. Changi
 a control marks the previous preview as outdated. Replay the clip to compare
 settings. All shake controls affect still images only.
 
-Click **Export shake settings** to download `shake-settings.json`, containing
-`version: 1` and the exact `shake` config. Share that file to describe your desired
-effect, or copy its `shake` values into `config.yaml`. **Run test** uses the same
-values and records them in the run report. The editor does not save to project
-config automatically.
+Click **Apply to project** to save the validated settings directly to `config.yaml`.
+Only the shake section is replaced, atomically; unrelated settings are preserved.
+New devtool runs use the saved defaults immediately. Restart already-running
+console/API processes to load them. **Run test** uses the editor's current values
+and records them in the run report even before you save. Applying is blocked
+during rendering or preview. Injected test servers must explicitly supply
+`config_path` to enable project saving; ordinary test uploads never modify config.
 
 Enter an optional **Channel name** to display a steady 8 pt label below each
-caption block. Leave it blank to omit it. The label scales with output width,
+caption block. Leave it blank to omit it. The label scales with the output's short edge,
 so its proportions match between fast preview and full-size reels. It appears
 only while captions are present and accepts up to 80 characters.
 
@@ -93,8 +96,8 @@ The UI calls `Transcriber.transcribe()`, `sentences_from_words()`, `build_plan()
 `app.video_builder.render()` directly. It checks the same timeline, caption,
 codec, audio, duration and output invariants as the core renderer. It tests local
 media preparation and rendering; production queue, remote downloads, publication
-and repository status updates are outside its scope. It does not write to
-`config.yaml`.
+and repository status updates are outside its scope. Only the explicit
+**Apply to project** action writes shake settings to `config.yaml`.
 
 Uploads are limited to 20 MB per image (40 million pixels) and 100 MB / 10 minutes
 per voice recording, and 256 MB / 10 minutes per video. A session supports one voice
