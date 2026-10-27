@@ -25,7 +25,7 @@ from app.config import (
     validate_shake,
 )
 from app.ffmpeg import run_ffmpeg as run_ffmpeg
-from app.footage import probe
+from app.footage import probe, validate_output
 from app.timeline import validate_plan
 
 log = logging.getLogger("video_builder")
@@ -278,21 +278,7 @@ def render(plan, audio, output, workdir, config, stop=None, progress=lambda p: N
             lambda p: progress(50 + p / 2),
             "Compose overlay captions and audio",
         )
-        result = probe(partial)
-        vs = next(s for s in result["streams"] if s["codec_type"] == "video")
-        aud = next((s for s in result["streams"] if s["codec_type"] == "audio"), None)
-        actual_duration = float(result["format"]["duration"])
-        rate_num, rate_den = map(int, vs["r_frame_rate"].split("/"))
-        if (
-            abs(actual_duration - plan.duration) > 1 / fps + 0.002
-            or not aud
-            or abs(float(vs["duration"]) - plan.duration) > 1 / fps + 0.002
-            or rate_num / rate_den != fps
-            or vs["codec_name"] != "h264"
-            or aud["codec_name"] != "aac"
-            or (vs["width"], vs["height"]) != (video["width"], video["height"])
-        ):
-            raise ValueError("Rendered output failed duration, resolution, or audio validation")
+        validate_output(partial, plan.duration, video)
         check_cancel(stop)
         progress(100)
         partial.replace(output)

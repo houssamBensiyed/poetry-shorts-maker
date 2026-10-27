@@ -102,6 +102,13 @@ class Caption:
 
 
 @dataclass(frozen=True)
+class Transition:
+    kind: str
+    start: float
+    end: float
+
+
+@dataclass(frozen=True)
 class Plan:
     """Hold the complete voiceover duration, visual intervals and caption units.
 
@@ -112,6 +119,7 @@ class Plan:
     duration: float
     footage: tuple[Interval, ...]
     captions: tuple[Caption, ...]
+    transitions: tuple[Transition, ...] = ()
 
     def to_dict(self):
         """Recursively convert timeline dataclasses to checkpoint-serializable values."""
@@ -263,7 +271,14 @@ def validate_plan(plan, words, threshold=3):
     expected_cuts = {
         c.sentence.start
         for c in plan.captions
-        if len(c.sentence.words) >= threshold and 0 < c.sentence.start < plan.duration
+        if threshold is not None
+        and len(c.sentence.words) >= threshold
+        and 0 < c.sentence.start < plan.duration
     }
-    if {i.start for i in plan.footage[1:]} != expected_cuts:
+    if threshold is not None and {i.start for i in plan.footage[1:]} != expected_cuts:
         raise ValueError("Footage cuts do not match qualifying sentences")
+    for transition in plan.transitions:
+        if transition.kind not in {"dissolve", "fade_in", "fade_out"} or not (
+            0 <= transition.start < transition.end <= plan.duration
+        ):
+            raise ValueError("Invalid timeline transition")

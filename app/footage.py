@@ -16,6 +16,26 @@ from app.timeline import Source
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
 
 
+def validate_output(path, duration, video):
+    """Shared final media contract for every rendering workflow."""
+    result = probe(path)
+    visual = next((s for s in result["streams"] if s["codec_type"] == "video"), None)
+    audio = next((s for s in result["streams"] if s["codec_type"] == "audio"), None)
+    if visual is None or audio is None:
+        raise ValueError("Rendered output is missing video or audio")
+    numerator, denominator = map(int, visual["r_frame_rate"].split("/"))
+    tolerance = 1 / video["fps"] + 0.002
+    if (
+        abs(float(result["format"]["duration"]) - duration) > tolerance
+        or abs(float(visual["duration"]) - duration) > tolerance
+        or numerator / denominator != video["fps"]
+        or visual["codec_name"] != "h264"
+        or audio["codec_name"] != "aac"
+        or (visual["width"], visual["height"]) != (video["width"], video["height"])
+    ):
+        raise ValueError("Rendered output failed duration, resolution, or audio validation")
+
+
 def probe(path):
     """Return FFprobe's decoded stream and format JSON for path.
 

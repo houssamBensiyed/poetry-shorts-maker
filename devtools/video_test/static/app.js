@@ -119,17 +119,20 @@ async function api(path, options = {}) {
   return result;
 }
 function updateChecks() {
+  const story = $("style").value === "story";
+  $("story-inputs").hidden = !story;
+  $("shake-editor").hidden = story;
   const mode = $("mode").value;
   const imagesReady = mode === "video" || session.images.length >= (mode === "hybrid" ? 1 : 3);
   const videosReady = mode === "image" || session.videos.length >= 1;
-  const footageReady = imagesReady && videosReady;
-  const requirement = mode === "image" ? "3–10 images" : mode === "video" ? "1–10 videos" : "at least one image and one video";
-  $("images-card").hidden = mode === "video";
-  $("videos-card").hidden = mode === "image";
+  const footageReady = story ? session.images.length > 0 && $("story-script").value.trim() !== "" : imagesReady && videosReady;
+  const requirement = story ? "a script and its numbered frames" : mode === "image" ? "3–10 images" : mode === "video" ? "1–10 videos" : "at least one image and one video";
+  $("images-card").hidden = !story && mode === "video";
+  $("videos-card").hidden = story || mode === "image";
   $("image-requirement").textContent = mode === "hybrid" ? "1–10 images required" : "3–10 images required";
   $("check-footage-text").textContent = `Add ${requirement} to this test session`;
   const audioReady = Boolean(session.audio);
-  const toolsReady = info?.ffmpeg && info?.font && info?.assets;
+  const toolsReady = info?.ffmpeg && (story || (info?.font && info?.assets));
   for (const [id, ready] of [
     ["check-images", footageReady],
     ["step-images", footageReady],
@@ -142,10 +145,21 @@ function updateChecks() {
     $(id).classList.toggle("complete", Boolean(ready));
   }
   const locked = Boolean(busy || active() || session.uploading);
+  $("style").disabled = locked;
+  $("story-script").disabled = locked;
+  $("alignment-link").hidden = !story || !session.run;
+  $("alignment-link").href = `${base()}/alignment`;
   document.body.classList.toggle("busy", locked);
   for (const id of ["image-drop", "video-drop", "audio-drop", "remove-audio", "mode", "size", "seed", "channel-name", ...shakeInputs])
     $(id).disabled = locked;
-  $("image-drop").disabled = locked || session.images.length >= 10;
+  $("mode").disabled = locked || story;
+  $("channel-name").disabled = locked || story;
+  $("seed").disabled = locked || story;
+  $("image-drop").disabled = locked || session.images.length >= (story ? 200 : 10);
+  if (story) {
+    $("image-requirement").textContent = "Numbered frames matching the script";
+    $("check-footage-text").textContent = "Script and numbered frames uploaded";
+  }
   $("video-drop").disabled = locked || session.videos.length >= 10;
   $("shake-preview-button").disabled = locked || !connected || !info?.ffmpeg || !session.images.length || !validShake();
   $("shake-export").disabled = locked || !connected || !validShake();
@@ -175,7 +189,7 @@ function updateChecks() {
     !audioReady ||
     !toolsReady ||
     !info?.speech ||
-    !validShake() ||
+    (!story && !validShake()) ||
     !validSeed;
   $("run").hidden = Boolean(active());
   $("stop").hidden = !active();
@@ -221,7 +235,7 @@ function renderMedia() {
       return wrapper;
     }));
   }
-  $("image-count").textContent = `${session.images.length} / 10`;
+  $("image-count").textContent = `${session.images.length} / ${$("style").value === "story" ? 200 : 10}`;
   $("image-status").textContent = session.images.length
     ? `${session.images.length} saved to temporary storage`
     : "Waiting for images";
@@ -420,7 +434,7 @@ async function upload(files, kind) {
   files = [...files];
   if (!files.length) return;
   clearError();
-  if (kind === "image" && session.images.length + files.length > 10)
+  if (kind === "image" && session.images.length + files.length > ($("style").value === "story" ? 200 : 10))
     return showError(
       new Error(
         "Choose no more than 10 images in total. Remove an image to make room.",
@@ -443,7 +457,7 @@ async function upload(files, kind) {
         `Saving ${index + 1} of ${files.length}: ${file.name}`;
       try {
         session = await api(
-          `${base()}/media/${kind}?name=${encodeURIComponent(file.name)}`,
+          `${base()}/media/${kind}?name=${encodeURIComponent(file.name)}&style=${$("style").value}`,
           {
             method: "POST",
             body: file,
@@ -498,7 +512,7 @@ $("remove-audio").addEventListener(
   "click",
   () => session.audio && removeMedia(session.audio.id),
 );
-for (const id of ["mode", "size", "seed", "channel-name", ...shakeInputs]) $(id).addEventListener("input", render);
+for (const id of ["style", "story-script", "mode", "size", "seed", "channel-name", ...shakeInputs]) $(id).addEventListener("input", render);
 $("shake-preview-button").addEventListener("click", async () => {
   busy = true;
   clearError();
@@ -542,8 +556,10 @@ $("run").addEventListener("click", async () => {
       body: JSON.stringify({
         size: $("size").value,
         mode: $("mode").value,
+        style: $("style").value,
+        script: $("story-script").value,
         seed: Number($("seed").value),
-        shake: shakeSettings(),
+        shake: $("style").value === "story" ? null : shakeSettings(),
         channel_name: $("channel-name").value,
       }),
     });

@@ -67,6 +67,8 @@ def create_app(config=None, processor=None):
     def run(
         mode: Literal["image", "video", "hybrid"] | None = None,
         channel_name: str | None = Query(default=None, max_length=80),
+        style: Literal["poetry", "story"] = "poetry",
+        section: str | None = None,
     ):
         """Request a manual run and return an uncached acknowledgement.
 
@@ -75,6 +77,10 @@ def create_app(config=None, processor=None):
         Because this GET has a side effect, it is intended for explicit API triggers.
         """
         overrides = {}
+        if style == "story":
+            if not section:
+                raise HTTPException(422, "Story style requires a section directory")
+            overrides.update(style=style, section=section)
         if mode is not None:
             overrides["mode"] = mode
         if channel_name is not None:

@@ -130,6 +130,54 @@ temp/
   voice-000001/            # Per-voice working files and failure diagnostics
 ```
 
+## Story workflow (V2)
+
+Choose **Poetry** for the existing random-footage workflow or **Story** for
+script-aligned numbered frames. Story runs one section at a time. Prepare:
+
+```text
+my-section/
+  script.txt       # One frame per nonempty line; numbering starts at 1
+  audio.wav        # Exactly one audio.* narration file
+  frames/
+    1.png
+    2.jpg
+```
+
+In the console choose **Story** and enter the section directory. Through the API:
+
+```sh
+curl -G -H "X-API-Key: $VIDEO_BUILDER_API_KEY" \
+  --data-urlencode 'style=story' \
+  --data-urlencode 'section=/absolute/path/to/my-section' \
+  http://127.0.0.1:8000/run
+```
+
+The directory must be accessible to the API process (mount it into Docker when
+using containers). Poll `/status` for completion, output location and diagnostic
+work directory. A repeated request explicitly creates a new section render.
+
+In the dev tool choose **Story**, paste the script, upload matching numbered
+images and the narration. Upload order does not matter; names establish the
+mapping. Test uploads remain in `temp/ui-test/`. Download the line alignment to
+inspect matched times and scores, including after an alignment failure.
+
+The parser writes `lines.json`, transcription writes `transcript.json`, and ordered
+alignment writes `alignment.json`. Each line requires matched boundary words and
+at least 70% word coverage; confidence is a matching score, not a probability.
+Uncertain lines stop the build and preserve diagnostics and inputs for correction.
+Limits are 200 nonempty lines and 10,000 normalized words per section.
+
+The first frame begins at zero. Later frames follow matched line starts, with
+dissolves finishing at those times. Dissolves last up to 0.4 seconds and shorten
+for closely spaced lines. Opening/closing black fades also last up to 0.4 seconds.
+Audio remains continuous; final duration differs by at most one output frame.
+Story uses narration and full-brightness still frames. Poetry's music, grain,
+shake, captions and channel-label controls are not applied to this story preset.
+Resolution and frame rate use the existing `video` settings; set width/height to
+1920/1080 for landscape output. Story never consumes the poetry voice queue or
+contacts Baserow/Cloudinary. Section inputs and diagnostic files are retained.
+
 ## Video composition
 
 The renderer automatically uses the bundled assets for both normal processing

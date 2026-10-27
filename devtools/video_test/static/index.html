@@ -132,7 +132,15 @@
           <div class="content-grid">
             <div class="input-column" id="inputs">
               <section class="card">
-                <label for="mode">Footage mode</label>
+                <label for="style">Video style</label>
+                <select id="style"><option value="poetry">Poetry</option><option value="story">Story</option></select>
+                <div id="story-inputs" hidden>
+                  <label for="story-script">Section script — one frame per nonempty line</label>
+                  <textarea id="story-script" rows="8" maxlength="100000"></textarea>
+                  <p class="field-help">Upload numbered images: 1.png, 2.jpg, etc. Story uses narration, dissolves and black fades. Uncertain matches stop rendering.</p>
+                  <a id="alignment-link" class="text-link" hidden>Download line alignment</a>
+                </div>
+                <label for="mode">Footage mode (poetry)</label>
                 <select id="mode">
                   <option value="image">Images</option>
                   <option value="video">Videos</option>
@@ -200,7 +208,7 @@
                 </button>
                 <div id="source-video-grid" class="image-grid" aria-label="Test session videos"></div>
               </section>
-              <section class="card" aria-labelledby="shake-heading">
+              <section class="card" id="shake-editor" aria-labelledby="shake-heading">
                 <div class="card-heading"><h2 id="shake-heading">Shake editor</h2></div>
                 <p class="card-description">Adjust the movement of still images. Preview uses the first uploaded image and the same effect as the final reel.</p>
                 <label><input type="checkbox" id="shake-enabled" checked /> Enable image shake</label>

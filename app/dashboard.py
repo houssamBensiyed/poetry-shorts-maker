@@ -48,8 +48,8 @@ class Dashboard(App):
     CSS = """
     Screen { layout: vertical; }
     #source, #mode, #channel-name { height: 3; }
-    #status { height: 3; padding: 1; }
-    #stats { height: 2; padding: 0 1; }
+    #status { height: 1; padding: 0 1; }
+    #stats { height: 1; padding: 0 1; }
     #job { height: 5; padding: 0 1; }
     #progress { height: 2; padding: 0 1; }
     #logs { height: 1fr; border: solid $primary; }
@@ -80,6 +80,15 @@ class Dashboard(App):
         appear literally instead of being interpreted as terminal formatting.
         """
         yield Header()
+        yield Select(
+            [("Poetry — random footage", "poetry"), ("Story — numbered frames", "story")],
+            value="poetry",
+            allow_blank=False,
+            id="style",
+        )
+        yield Input(
+            placeholder="Story section directory (script.txt, audio.*, frames/)", id="section"
+        )
         yield Select(
             [
                 ("Local buffer — process buffered voices", "local"),
@@ -147,6 +156,13 @@ class Dashboard(App):
         bar.update(total=None if active and value is None else 100, progress=value or 0)
         self.query_one("#start", Button).disabled = active or self.exiting
         self.query_one("#source", Select).disabled = active or self.exiting
+        self.query_one("#style", Select).disabled = active or self.exiting
+        self.query_one("#section", Input).disabled = active or self.exiting
+        story = self.query_one("#style", Select).value == "story"
+        self.query_one("#section", Input).display = story
+        self.query_one("#source", Select).display = not story
+        self.query_one("#mode", Select).display = not story
+        self.query_one("#channel-name", Input).display = not story
         self.query_one("#mode", Select).disabled = active or self.exiting
         self.query_one("#channel-name", Input).disabled = active or self.exiting
         self.query_one("#stop", Button).disabled = not active or state.get(
@@ -168,9 +184,12 @@ class Dashboard(App):
         action = event.button.id
         if action == "start":
             source = self.query_one("#source", Select).value
+            story = self.query_one("#style", Select).value == "story"
             try:
                 started = self.processor.start(
-                    prepare=self.prepare_baserow if source == "baserow" else None,
+                    prepare=self.prepare_baserow if source == "baserow" and not story else None,
+                    style="story" if story else "poetry",
+                    section=self.query_one("#section", Input).value if story else None,
                     empty_message=EMPTY_BUFFER_MESSAGE,
                     mode=self.query_one("#mode", Select).value,
                     channel_name=self.query_one("#channel-name", Input).value,

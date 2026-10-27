@@ -141,6 +141,15 @@ publication and sheet updates remain in the separate automation listener.
 
 ## HTTP API
 
+`GET /run?style=story&section=/server/path/to/section` selects the story workflow.
+The section directory must contain `script.txt`, exactly one `audio.*` file and
+numbered images under `frames/`. The default style is `poetry`. Story requests
+return HTTP 202 when scheduled; use `/status` to inspect success or failure and
+the `output` / `work` paths. Input errors and uncertain alignment stop the run
+without removing source files. `lines.json`, `transcript.json`, `alignment.json`
+and `plan.json` remain in the unique work directory for review. Transcription
+credentials are required; Baserow, Cloudinary, music and overlays are not.
+
 Set `VIDEO_BUILDER_API_KEY` in `.env`, then start the API:
 
 ```sh

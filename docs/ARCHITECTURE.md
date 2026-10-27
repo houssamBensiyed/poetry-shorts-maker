@@ -5,6 +5,34 @@ publication are independent optional adapters.
 
 ## Responsibility boundaries
 
+`app/workflows.py` provides a registry of `poetry` and `story` service factories.
+Console and HTTP requests choose the style at the Processor boundary. Dev-tool
+story requests use the same factory with an isolated `StoryRequest` rather than
+a server-local section directory. Poetry remains the default for existing callers.
+
+Story has its own input validation, parser, ordered speech aligner and frame
+planner in `app/story.py`. Its typed input contains audio, script, indexed frames,
+output and working paths. Parsing and alignment are independent of rendering.
+Alignment normalizes word case/punctuation, matches globally in order, permits
+small spelling substitutions, and fails closed on missing boundaries or low
+coverage. It is deliberately conservative; production ElevenLabs recordings
+still need representative alignment review.
+
+Both planners use `Plan`/`Interval`; story adds explicit `Transition` records.
+Shared timeline validation handles coverage and legal transition bounds; poetry's
+sentence-threshold validation is opt-in via its threshold argument. Story uses
+its line alignment as the cut policy. Encoding strategies remain separate:
+poetry composes its existing effects, while story renders bounded-size holds and
+dissolves independently and concatenates them. This avoids one giant filter graph
+for a long section. Both share FFmpeg execution/cancellation, media probing and
+final H.264/AAC resolution/fps/duration validation.
+
+Story runs retain all source files and diagnostics. A section lock prevents the
+same directory from rendering concurrently across clients; the existing Processor
+run lock also serializes runs sharing its configured queue. Successful explicit
+story submissions can be repeated and receive unique output/work paths. Provider
+automation remains attached only to poetry's voice-buffer lifecycle.
+
 | Component | Responsibility |
 | --- | --- |
 | `VoiceBuffer` in `app/buffer.py` | Strict numbering, atomic enqueue, source metadata and completion outbox |

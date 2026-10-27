@@ -847,6 +847,12 @@ textarea {
   margin-top: 12px;
   background: #111;
 }
+#story-script {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  min-height: 140px;
+}
 #shake-enabled {
   width: auto;
   height: auto;

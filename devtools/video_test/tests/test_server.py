@@ -256,6 +256,33 @@ def test_static_and_local_request_guard(client):
     assert client.get("/.env").status_code == 404
 
 
+def test_story_devtool_alignment_and_render(client):
+    base = session(client)
+    for index in range(1, 4):
+        assert (
+            client.post(
+                f"{base}/media/image?name={index}.png&style=story", content=image_bytes()
+            ).status_code
+            == 201
+        )
+    assert (
+        client.post(f"{base}/media/audio?name=audio.wav", content=audio_bytes()).status_code == 201
+    )
+    response = client.post(
+        f"{base}/run",
+        json={
+            "style": "story",
+            "script": "First test sentence.\nAnother image appears.\nLast words here.",
+            "size": "full",
+        },
+    )
+    assert response.status_code == 202, response.text
+    state = wait(client, base)
+    assert state["run"]["status"] == "passed", state
+    alignment = client.get(f"{base}/alignment").json()
+    assert [line["start"] for line in alignment["lines"]] == [0, 0.8, 1.5]
+
+
 def test_uploads_stay_in_temp_and_sessions_are_isolated(client):
     base, other = session(client), session(client)
     data = fill(client, base)

@@ -71,6 +71,8 @@ class RunOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     size: Literal["preview", "full"] = "preview"
+    style: Literal["poetry", "story"] = "poetry"
+    script: str = Field(default="", max_length=100000)
     mode: Literal["image", "video", "hybrid"] = "image"
     seed: int = Field(default=42, ge=0, le=2147483647)
     channel_name: str = Field(default="", max_length=80)
@@ -321,7 +323,9 @@ def create_app(config=None):
         session = get_session(session_id)
         with session.lock:
             session.available()
-            if kind == "image" and len(session.images) >= 10:
+            if kind == "image" and len(session.images) >= (
+                200 if request.query_params.get("style") == "story" else 10
+            ):
                 raise HTTPException(400, "A test session can hold up to 10 images.")
             if kind == "video" and len(session.videos) >= 10:
                 raise HTTPException(400, "A test session can hold up to 10 videos.")
@@ -442,6 +446,35 @@ def create_app(config=None):
         work = session.run_directory(run_id)
         output = work / "video.mp4"
         try:
+            if options.style == "story":
+                from app.story import StoryRequest
+                from app.workflows import build_workflow
+
+                frames = story_frames(session)
+                request = StoryRequest(
+                    media_path(session, session.audio), options.script, frames, output, work
+                )
+                workflow = build_workflow(
+                    run_config, "story", request=request, transcriber=Transcriber(config["whisper"])
+                )
+                workflow.validate()
+                executor = workflow.executor(
+                    session.stop,
+                    lambda **values: session.event(
+                        values.get("stage", "Rendering story"), values.get("render_progress")
+                    ),
+                )
+                executor.run(None, None, [])
+                with session.lock:
+                    session.run.update(
+                        status="passed",
+                        video=True,
+                        progress=100,
+                        duration=audio_duration(request.audio),
+                        bytes=output.stat().st_size,
+                        composition={"style": "story"},
+                    )
+                return
             work.mkdir(parents=True, exist_ok=True)
             audio = media_path(session, session.audio)
             duration = audio_duration(audio)
@@ -505,6 +538,27 @@ def create_app(config=None):
                 log.exception("Could not save test report")
             render_lock.release()
 
+    def story_frames(session):
+        from app.story import numbered_frames
+
+        named = numbered_frames([Path(item["name"]) for item in session.images])
+        return {
+            index: media_path(
+                session, next(item for item in session.images if item["name"] == path.name)
+            )
+            for index, path in named.items()
+        }
+
+    @app.get("/api/sessions/{session_id}/alignment")
+    def alignment_report(session_id: str):
+        session = get_session(session_id)
+        if not session.run:
+            raise HTTPException(404, "No story run")
+        path = session.run_directory(session.run["id"]) / "alignment.json"
+        if not path.is_file():
+            raise HTTPException(404, "No alignment available")
+        return FileResponse(path, media_type="application/json", filename="alignment.json")
+
     @app.post("/api/sessions/{session_id}/run", status_code=202)
     def start(session_id: str, options: RunOptions):
         session = get_session(session_id)
@@ -512,20 +566,44 @@ def create_app(config=None):
             session.available()
             if not session.audio:
                 raise HTTPException(400, "Add one voice recording before running a test.")
-            if options.mode == "image" and not 3 <= len(session.images) <= 10:
+            if options.style == "story":
+                from app.story import StoryRequest, validate_inputs
+
+                try:
+                    validate_inputs(
+                        StoryRequest(
+                            media_path(session, session.audio),
+                            options.script,
+                            story_frames(session),
+                            Path("unused"),
+                            Path("unused"),
+                        )
+                    )
+                except (ValueError, OSError) as exc:
+                    raise HTTPException(400, str(exc)) from exc
+            if (
+                options.style == "poetry"
+                and options.mode == "image"
+                and not 3 <= len(session.images) <= 10
+            ):
                 raise HTTPException(
                     400, "Add 3–10 images and one voice recording before running a test."
                 )
-            if options.mode in ("video", "hybrid") and not session.videos:
+            if (
+                options.style == "poetry"
+                and options.mode in ("video", "hybrid")
+                and not session.videos
+            ):
                 raise HTTPException(400, "Add at least one video for video or hybrid mode.")
-            if options.mode == "hybrid" and not session.images:
+            if options.style == "poetry" and options.mode == "hybrid" and not session.images:
                 raise HTTPException(400, "Add at least one image for hybrid mode.")
             try:
                 check_transcription_config(config)
-                check_render_config(config)
+                if options.style == "poetry":
+                    check_render_config(config)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
-            if not info()["ffmpeg"] or not info()["font"]:
+            if not info()["ffmpeg"] or (options.style == "poetry" and not info()["font"]):
                 raise HTTPException(
                     400, "FFmpeg, FFprobe and the configured caption font are required."
                 )

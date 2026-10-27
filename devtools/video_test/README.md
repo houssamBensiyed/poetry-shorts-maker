@@ -14,6 +14,16 @@ Open **http://127.0.0.1:8765**. Use `--port 8766` if that port is busy.
 No Node build, new runtime dependency, Baserow or Cloudinary setup is needed.
 The launcher only listens on your own computer.
 
+Select **Story** to build a script-aligned section: paste one nonempty script line
+per frame, upload images named `1.png`, `2.jpg`, etc., and upload the matching voice.
+Story supports up to 200 indexed frames per section and uses narration, dissolves
+and black fades. Poetry-only effects are not applied. Upload order is irrelevant;
+missing or duplicate indexes are rejected before transcription. Download the
+alignment JSON after a run to inspect exact line timestamps or unmatched lines.
+All story uploads, outputs and diagnostic JSON stay inside the temporary session.
+The existing 100 MB / ten-minute developer voice-upload limit still applies;
+longer recordings can be submitted as section directories through console/API.
+
 1. Choose **Images**, **Videos**, or **Hybrid**. Image mode needs 3–10 images;
    video mode needs 1–10 videos; hybrid needs at least one of each and starts with
    a video. Upload JPG/PNG/WebP images and MP4/MOV/MKV/WebM/M4V/AVI videos for your
