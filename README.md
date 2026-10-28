@@ -1,31 +1,70 @@
 # Poetry Shorts Maker
 
-Turn buffered voice recordings and local images into vertical MP4s with timed captions.
-The video worker uses the filesystem queue. Baserow ingestion and Cloudinary
-publication are optional automations running separately.
+Build caption-led poetry reels or script-aligned story sections from narration
+and local media. Choose the video style and output aspect ratio in the console,
+HTTP API or browser devtools. Both builders produce validated H.264/AAC MP4s.
+
+## Choose a builder
+
+| | Poetry (V1) | Story (V2) |
+| --- | --- | --- |
+| Intended use | Poetry, quotes and videos centered on captions | Story-driven sections with a specific frame for each script line |
+| Inputs | Numbered voice queue and shared media assets | Section script, narration and numbered still frames |
+| Footage | Random images, videos or a hybrid mix | Line 1 → frame `1`, line 2 → frame `2`, in script order |
+| Timing | Whisper word timestamps and sentence-based footage changes | Whisper word timestamps matched to the supplied script |
+| Composition | Captions, optional channel label, music, grain and image shake | Opening black fade, frame dissolves and closing black fade |
+| Source lifecycle | Successfully rendered voices leave the queue | Section inputs are retained for correction or another render |
+
+Poetry is the default for existing callers. Story is a separate workflow selected
+with `style=story`; it does not consume the poetry buffer or use its random asset
+pools. Baserow ingestion and Cloudinary publication remain optional automations
+around the poetry queue. Neither builder needs those provider accounts.
 
 ```mermaid
 flowchart LR
+    Clients[Console / HTTP API] --> Router{Workflow router}
+    Devtools[Browser devtools] --> Preview[Isolated poetry preview]
+    Devtools -->|Story uploads| Router
+    Router -->|Poetry| Poetry[Poetry builder]
+    Router -->|Story| Story[Story builder]
     Files[Local audio files] --> Queue[Numbered voice buffer]
-    Queue --> Worker[Transcribe, plan, render]
-    Images[Shared image assets] --> Worker
-    Worker --> Video[Validated MP4]
-    Video --> Consume[Save completion event, remove voice]
+    Queue --> Poetry
+    Assets[Shared images / videos / music / overlay] --> Poetry
+    Section[Script + narration + numbered frames] --> Story
+    Poetry --> Video[Validated MP4]
+    Preview --> Video
+    Story --> Video
+    Poetry --> Consume[On success: save event and remove voice]
     Baserow[Baserow refill automation] -. only when queue is empty .-> Queue
     Consume -. optional listener .-> Upload[Cloudinary upload]
     Upload --> Sheet[Original Baserow row: URL and DONE]
 ```
 
-## Local quick start
+The builders use separate input validation, planning and rendering strategies,
+with shared timeline types, FFmpeg execution, cancellation and output validation.
+See the [architecture guide](docs/ARCHITECTURE.md) for the implementation boundaries.
+
+## Installation
 
 Use Python 3.13 or 3.14 and FFmpeg/FFprobe with H.264 and libass support.
-The font, background music and film overlay are included under `assets/`.
+The font, background music and film overlay for Poetry are included under `assets/`.
 
 ```sh
 python3.13 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
-mkdir -p assets/images
 ```
+
+Set `WHISPER_API_KEY` securely in your shell. The default configuration uses
+Groq's `whisper-large-v3` transcription API for word and segment timestamps.
+Both builders need the configured transcription service for a full render;
+no Baserow or Cloudinary credentials are required. The native console, worker
+and API read exported environment variables. The devtools launcher can also
+read the configured Whisper key from the project's `.env` file.
+
+Continue with [Poetry](#poetry-workflow-v1), [Story](#story-workflow-v2), or
+[devtools](#devtools-preview-and-shake-editor) to build your first video.
+
+## Poetry workflow (V1)
 
 Copy still JPG, PNG, WebP or BMP images directly into `assets/images/`.
 This shared pool is configured by `composition.images_directory` in `config.yaml`.
@@ -43,31 +82,16 @@ Immediate repeats are avoided when another candidate exists. Clips start at a
 random usable offset and loop when shorter than their section; their audio is muted.
 
 Use `GET /run?mode=video` or `GET /run?mode=hybrid` for an API run, or
-`python -m app.buffer run --mode hybrid` from the CLI. These overrides apply only
+`.venv/bin/python -m app.buffer run --mode hybrid` from the CLI. These overrides apply only
 to that run; plain `/run` uses the configured default. The dev tool has the same
 three modes with separate test uploads stored under `temp/ui-test/`.
 
 An optional channel name appears in small 8 pt text below the captions. Enter it
 in the console or dev tool, pass `channel_name` to `/run`, or use
-`python -m app.buffer run --channel-name "My Channel"`. Names are limited to 80
+`.venv/bin/python -m app.buffer run --channel-name "My Channel"`. Names are limited to 80
 characters; an omitted/blank name produces no label. Set `captions.channel_name`
 for a project default. The label follows each full caption block and stays still
 during word reveals. Its size scales with the short edge (8 pt at 1080 pixels).
-
-Choose the output aspect ratio in the console or dev tool: **9:16** (1080×1920),
-**16:9** (1920×1080), **1:1** (1080×1080), or **4:5** (1080×1350).
-**Project default** keeps the custom width/height in `config.yaml`. Both poetry
-and story support these choices. API callers pass `aspect_ratio=16:9` to `/run`.
-The buffer CLI accepts `python -m app.buffer run --aspect-ratio 16:9`.
-Format selections apply only to that run; devtool previews use a 360-pixel short
-edge, such as 640×360 for landscape. Full renders use the listed dimensions.
-
-The dev tool's **Shake editor** adjusts image zoom, movement on each axis and
-cycle times. Upload one image and click **Preview shake** to render six seconds
-without a voice or transcription. **Apply to project** saves the settings directly
-to the `shake` section of `config.yaml` and updates new devtool runs immediately.
-Restart an already-running console or API to load the saved project settings.
-Changing controls alone affects test runs; saving requires clicking Apply.
 
 When upgrading, move your existing still images from `buffer/images/` into
 `assets/images/` (preserve any same-name files). Git does not relocate ignored
@@ -88,11 +112,6 @@ start at 1, are processed numerically, and must not be reused, even with another
 extension. Prefer the add command so complete files and IDs are published together.
 Gaps after a failed enqueue are allowed.
 
-Export `WHISPER_API_KEY` securely in your shell. The default configuration uses
-Groq's `whisper-large-v3` transcription API to obtain word and segment timestamps.
-The local worker still needs this speech service; it needs no Baserow or Cloudinary
-credentials, table IDs or cloud name. Native Python does not load `.env`.
-
 Run one batch, open the dashboard, or keep polling for new voices:
 
 ```sh
@@ -102,7 +121,8 @@ Run one batch, open the dashboard, or keep polling for new voices:
 ```
 
 Only choose one worker at a time. The dashboard and API share the same buffer
-lock. In the dashboard, choose the input source before **Start Processing**:
+lock. In the dashboard, select **Poetry**, choose an output size and select the
+input source before **Start Processing**:
 
 - **Local buffer** (default) processes already-buffered voices. An empty buffer
   is rejected with a message to add local voices or choose Baserow.
@@ -152,12 +172,30 @@ my-section/
     2.jpg
 ```
 
-In the console choose **Story** and enter the section directory. Through the API:
+Write `script.txt` as one nonempty line per frame. Blank lines are ignored; the
+parser assigns consecutive indexes starting at 1. For example:
+
+```text
+The traveler reached the old bridge.
+A light appeared on the other side.
+```
+
+The first line uses `frames/1.png`; the second uses `frames/2.jpg`. Frame names
+must be positive numbers without leading zeros. JPG/JPEG, PNG, WebP and BMP
+still images are supported. Every line needs exactly one frame; missing, extra
+or duplicate indexes are rejected before transcription. The narration must be
+named `audio.wav`, `audio.mp3`, `audio.m4a`, `audio.flac`, `audio.ogg`, `audio.aac`
+or `audio.opus`, with exactly one `audio.*` recording in the section directory.
+
+In the console (`.venv/bin/python main.py`), choose **Story**, enter the section
+directory and select the output size, then click **Start Processing**. Through
+the [HTTP API](#docker-and-api), this example creates a landscape section:
 
 ```sh
 curl -G -H "X-API-Key: $VIDEO_BUILDER_API_KEY" \
   --data-urlencode 'style=story' \
   --data-urlencode 'section=/absolute/path/to/my-section' \
+  --data-urlencode 'aspect_ratio=16:9' \
   http://127.0.0.1:8000/run
 ```
 
@@ -170,9 +208,10 @@ images and the narration. Upload order does not matter; names establish the
 mapping. Test uploads remain in `temp/ui-test/`. Download the line alignment to
 inspect matched times and scores, including after an alignment failure.
 
-The parser writes `lines.json`, transcription writes `transcript.json`, and ordered
-alignment writes `alignment.json`. Each line requires matched boundary words and
-at least 70% word coverage; confidence is a matching score, not a probability.
+The parser writes `lines.json`, transcription writes `transcript.json`, ordered
+alignment writes `alignment.json`, and the frame planner writes `plan.json` before
+encoding. Each line requires matched boundary words and at least 70% word
+coverage; confidence is a matching score, not a probability.
 Uncertain lines stop the build and preserve diagnostics and inputs for correction.
 Limits are 200 nonempty lines and 10,000 normalized words per section.
 
@@ -182,14 +221,84 @@ for closely spaced lines. Opening/closing black fades also last up to 0.4 second
 Audio remains continuous; final duration differs by at most one output frame.
 Story uses narration and full-brightness still frames. Poetry's music, grain,
 shake, captions and channel-label controls are not applied to this story preset.
-Choose landscape in any client or pass `aspect_ratio=16:9` to the API; omitted
-formats and the frame rate use the `video` settings. Story never consumes the poetry voice queue or
-contacts Baserow/Cloudinary. Section inputs and diagnostic files are retained.
+Story never consumes the poetry voice queue or contacts Baserow/Cloudinary.
+Console/API runs save `output/story-<unique-id>.mp4` with diagnostics under
+`temp/story-<unique-id>/`. Section inputs and working files are retained on
+success, failure or cancellation. The buffer CLI remains a Poetry queue client;
+use the console, HTTP API or devtools to render Story sections.
 
-## Video composition
+## Output formats
 
-The renderer automatically uses the bundled assets for both normal processing
-and the dev tool. Inputs are a voice recording and the selected image/video pools.
+Both builders support the same per-run choices:
+
+| Aspect ratio | Full output | Devtools fast preview |
+| --- | --- | --- |
+| 9:16 · Portrait | 1080 × 1920 | 360 × 640 |
+| 16:9 · Landscape | 1920 × 1080 | 640 × 360 |
+| 1:1 · Square | 1080 × 1080 | 360 × 360 |
+| 4:5 · Portrait | 1080 × 1350 | 360 × 450 |
+| Project default | `video.width` × `video.height` | Same proportions, even dimensions and a 360-pixel short edge |
+
+Choose a format in the console or devtools, pass `aspect_ratio=16:9` to `/run`,
+or use `.venv/bin/python -m app.buffer run --aspect-ratio 16:9` for the Poetry queue.
+Omitting the API/CLI override keeps the project dimensions, which default to
+1080 × 1920. Frame rate comes from `video.fps`. The renderers crop still images
+to fill the selected frame; Poetry video clips are also scaled and cropped to fit.
+Caption and channel-label sizing scales with the short edge.
+
+Format selections affect only the requested run; they do not rewrite
+`config.yaml` or alter an active render. Set `video.width` and `video.height`
+there to establish different project defaults.
+
+## Devtools preview and shake editor
+
+Launch the local browser interface from the repository root:
+
+```sh
+.venv/bin/python -m devtools.video_test
+```
+
+Open **http://127.0.0.1:8765**. Use `--port 8766` if needed. The interface uses
+the existing project dependencies and needs no Node build. Its minimal styling
+keeps the dark sidebar, orange accents and Poetry Shorts logo.
+
+Choose **Poetry** or **Story**, upload the required media, select the aspect
+ratio and fast preview/full size, then click **Run test**. Poetry image tests
+need 3–10 images, video tests need 1–10 clips, and hybrid tests need at least
+one of each. Story accepts up to 200 numbered frames and the section script.
+Voice uploads are limited to 100 MB and ten minutes; use console/API section
+directories for longer stories. Watch progress, play/download the MP4, save the
+run report, or download Story line alignment for review.
+
+Uploads, outputs and previews stay under `temp/ui-test/<session>/`. Devtools
+does not consume production voices or add test media to `assets/`. Full tests
+use the configured transcription service; external publication is not part of
+the preview workflow.
+
+In **Poetry**, the **Shake editor** controls image zoom, horizontal/vertical
+movement and cycle times. Upload one image and click **Preview shake** to see
+six seconds of motion in the selected aspect ratio, without narration or a
+transcription request. Smaller cycle times increase speed. Movement percentages
+use the crop space created by zoom; at 100% zoom there is no spare space to shake.
+These controls affect still images; video clips keep their own motion.
+
+Click **Apply to project** to save the exact validated shake values directly to
+the `shake` section of `config.yaml`. Devtools performs the update itself; no
+configuration export, copying or manual code editing is required. The saved
+values survive a devtools restart and become its defaults next time it opens.
+New devtool runs use them immediately. Restart an already-running console,
+API or buffer worker to load the saved project settings.
+
+Changing controls alone affects the current test settings. Saving requires
+**Apply to project**, and applying is blocked while a preview or render is active.
+Other project settings are preserved. See the [devtools guide](devtools/video_test/README.md)
+for upload rules and diagnostic files.
+
+## Poetry composition
+
+The Poetry renderer automatically uses the bundled assets for normal processing
+and Poetry devtool tests. Inputs are a voice recording and the selected
+image/video pools.
 
 - Choose one random track from `assets/music/` per reel; loop it as needed at
   **−12.0 dB** and mix it with the original voice at **+3.4 dB**.
@@ -205,7 +314,7 @@ Gains are applied before mixing, without automatic mix normalization. Audio and
 video are trimmed to the voice timeline. `composition.json` in retained working
 files records the selected assets and mix settings; dev-tool reports include it.
 
-## Completion and failures
+## Poetry queue completion and failures
 
 - The planner randomly selects local images while composing the video. Images
   remain reusable; `footage.random_seed` can make selections repeatable.
@@ -279,9 +388,32 @@ docker compose --profile worker up worker
 docker compose --profile automations up automations
 ```
 
-Set `VIDEO_BUILDER_API_KEY` for the optional API, then run `python api.py` or
+Set `VIDEO_BUILDER_API_KEY` for the optional API, then run `.venv/bin/python api.py` or
 `docker compose --profile api up api`. Authenticated `GET /run` starts the same
 local worker; `GET /status` reports its state. Both require `X-API-Key`.
+
+| `/run` query | Behavior |
+| --- | --- |
+| `style=poetry` (default) | Process the local numbered voice queue |
+| `style=story&section=/absolute/path` | Render one script-aligned section accessible to the server |
+| `aspect_ratio=16:9` | Override the output format for either builder; also accepts `9:16`, `1:1` and `4:5` |
+| `mode=image`, `video` or `hybrid` | Choose Poetry footage sources |
+| `channel_name=My Channel` | Override Poetry's channel label; blank suppresses the default |
+
+For example, trigger Poetry with landscape hybrid footage and inspect its status:
+
+```sh
+curl -G -H "X-API-Key: $VIDEO_BUILDER_API_KEY" \
+  --data-urlencode 'mode=hybrid' \
+  --data-urlencode 'aspect_ratio=16:9' \
+  http://127.0.0.1:8000/run
+curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" http://127.0.0.1:8000/status
+```
+
+HTTP 202 acknowledges a started worker; poll `/status` to check the result.
+Story requires `section`; unsupported styles, formats and footage modes return
+HTTP 422. Poetry-only composition controls are not applied to Story.
+
 See [operations](docs/operations.md) for configuration and recovery details.
 
 ## Development checks
@@ -300,8 +432,11 @@ retry behavior. External transcription, Baserow and Cloudinary are mocked; tests
 do not establish successful paid transcription or live publication.
 Renderer tests measure decoded audio gains, RGB difference blending, looping and
 smooth image movement. CI includes the dev-tool suite as well as the core suite.
+Story tests cover line/frame mapping, alignment rejection, fades/dissolves,
+landscape output, cancellation, section locking and source retention. Devtools
+tests cover temporary uploads and shake settings saved across application restarts.
 Container startup and live provider processing require separate validation.
 
 See [architecture](docs/ARCHITECTURE.md) for the composition boundaries. The
-[local media test tool](devtools/video_test/README.md) remains available for manual
-voice/image testing. Historical [n8n examples](n8n/README.md) are optional integrations.
+[local media test tool](devtools/video_test/README.md) supports manual Poetry and
+Story rendering. Historical [n8n examples](n8n/README.md) are optional integrations.
