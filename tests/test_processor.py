@@ -16,12 +16,12 @@ from app.timeline import Source, Word, build_plan, sentences_from_words
 
 def setup(monkeypatch, tmp_path):
     config = load_config()
+    config["composition"]["images_directory"] = str(tmp_path / "assets" / "images")
     config["baserow"]["table_id"] = uuid.uuid4().int
     config["paths"].update(
         temp=str(tmp_path / "temp"),
         output=str(tmp_path / "output"),
         buffer=str(tmp_path / "buffer"),
-        image_buffer=str(tmp_path / "images"),
     )
     updates = []
 
@@ -332,6 +332,7 @@ def test_no_pending_jobs_do_not_construct_media_adapters(monkeypatch, tmp_path):
 
 def test_configuration_is_snapshotted(tmp_path):
     config = load_config()
+    config["composition"]["images_directory"] = str(tmp_path / "assets" / "images")
     processor = Processor(config)
     config["paths"]["output"] = str(tmp_path)
     assert processor.config["paths"]["output"] != str(tmp_path)

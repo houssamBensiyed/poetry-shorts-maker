@@ -1,6 +1,6 @@
 """Serve a local testing UI without loading production jobs or publishers.
 
-Uploads are written into unique folders under the configured media buffers.
+Uploads, outputs and diagnostics stay under the configured temporary directory.
 Sessions live in memory; files and render diagnostics remain on disk for review.
 Only one render runs at a time. Each run freezes its session's inputs until the
 worker finishes, including cancellation. The launcher binds to loopback only.
@@ -23,20 +23,49 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.cancellation import Cancelled, check_cancel
-from app.config import check_transcription_config, load_config
-from app.footage import audio_duration
+from app.config import (
+    ROOT,
+    check_composition_config,
+    check_render_config,
+    check_transcription_config,
+    load_config,
+    normalize_channel_name,
+    validate_shake,
+)
+from app.ffmpeg import run_ffmpeg
+from app.footage import VIDEO_SUFFIXES, audio_duration, video_duration
+from app.settings import save_shake_settings
 from app.timeline import Source, build_plan, sentences_from_words
 from app.transcription import Transcriber
-from app.video_builder import render
+from app.video_builder import image_motion_filter, render
+from app.video_format import VIDEO_FORMATS, AspectRatio, with_video_format
 
 STATIC = Path(__file__).parent / "static"
 IMAGE_LIMIT = 20 * 1024 * 1024
 AUDIO_LIMIT = 100 * 1024 * 1024
+VIDEO_LIMIT = 256 * 1024 * 1024
 log = logging.getLogger(__name__)
+
+
+class ShakeOptions(BaseModel):
+    """Validated settings shared by preview, project defaults and the renderer."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    enabled: bool = True
+    zoom: float = 1.03
+    amplitude_x: float = 0.35
+    amplitude_y: float = 0.35
+    period_x: float = 2.4
+    period_y: float = 3.2
+
+    @model_validator(mode="after")
+    def valid_effect(self):
+        validate_shake(self.model_dump())
+        return self
 
 
 class RunOptions(BaseModel):
@@ -45,7 +74,18 @@ class RunOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     size: Literal["preview", "full"] = "preview"
+    aspect_ratio: AspectRatio | None = None
+    style: Literal["poetry", "story"] = "poetry"
+    script: str = Field(default="", max_length=100000)
+    mode: Literal["image", "video", "hybrid"] = "image"
     seed: int = Field(default=42, ge=0, le=2147483647)
+    channel_name: str = Field(default="", max_length=80)
+    shake: ShakeOptions | None = None
+
+    @field_validator("channel_name")
+    @classmethod
+    def channel_label(cls, value):
+        return normalize_channel_name(value)
 
 
 class Session:
@@ -54,14 +94,21 @@ class Session:
     def __init__(self, config):
         self.id = uuid.uuid4().hex
         self.images = []
+        self.videos = []
         self.audio = None
         self.lock = threading.RLock()
         self.uploading = False
         self.stop = threading.Event()
         self.thread = None
-        self.image_dir = Path(config["paths"]["image_buffer"]) / "ui-test" / self.id
-        self.audio_dir = Path(config["paths"]["buffer"]) / "ui-test" / self.id
+        self.directory = Path(config["paths"]["temp"]).resolve() / "ui-test" / self.id
+        self.image_dir = self.directory / "images"
+        self.video_dir = self.directory / "videos"
+        self.audio_dir = self.directory / "voiceovers"
         self.run = None
+        self.shake_preview = None
+
+    def run_directory(self, run_id):
+        return self.directory / "runs" / run_id
 
     @property
     def active(self):
@@ -77,9 +124,11 @@ class Session:
                 {
                     "id": self.id,
                     "images": self.images,
+                    "videos": self.videos,
                     "audio": self.audio,
                     "run": self.run,
                     "uploading": self.uploading,
+                    "shake_preview": self.shake_preview,
                 }
             )
 
@@ -91,9 +140,13 @@ class Session:
                 self.run["progress"] = progress
 
 
-def create_app(config=None):
+def create_app(config=None, *, config_path=None):
     """Create an isolated test service using the existing renderer and planner."""
-    config = copy.deepcopy(config if config is not None else load_config())
+    if config is None:
+        config_path = Path(config_path or ROOT / "config.yaml").resolve()
+        config = load_config(config_path)
+    config = copy.deepcopy(config)
+    settings_path = Path(config_path).resolve() if config_path is not None else None
     sessions = {}
     render_lock = threading.Lock()
 
@@ -116,7 +169,7 @@ def create_app(config=None):
 
     @app.middleware("http")
     async def local_requests(request, call_next):
-        # A custom header prevents cross-origin forms from writing to local buffers.
+        # A custom header prevents cross-origin forms from writing to temporary sessions.
         if request.method in {"POST", "DELETE"}:
             origin = request.headers.get("origin")
             expected = f"{request.url.scheme}://{request.headers.get('host')}"
@@ -141,7 +194,11 @@ def create_app(config=None):
         return sessions[session_id]
 
     def media_path(session, item):
-        folder = session.image_dir if item["kind"] == "image" else session.audio_dir
+        folder = {
+            "image": session.image_dir,
+            "video": session.video_dir,
+            "audio": session.audio_dir,
+        }[item["kind"]]
         return folder / item["file"]
 
     @app.get("/api/info")
@@ -151,16 +208,139 @@ def create_app(config=None):
             check_transcription_config(config)
         except ValueError as exc:
             speech_error = str(exc)
+        assets_error = None
+        try:
+            check_composition_config(config)
+        except ValueError as exc:
+            assets_error = str(exc)
         return {
             "ffmpeg": bool(shutil.which("ffmpeg") and shutil.which("ffprobe")),
             "font": Path(config["captions"]["font_file"]).is_file(),
+            "assets": assets_error is None,
+            "assets_error": assets_error,
             "speech": speech_error is None,
             "speech_error": speech_error,
             "speech_model": config["whisper"]["model"],
             "full_size": f"{config['video']['width']} × {config['video']['height']}",
-            "preview_size": f"360 × {max(2, round(config['video']['height'] * 360 / config['video']['width'] / 2) * 2)}",
+            "preview_size": " × ".join(
+                str(with_video_format(config, preview=True)["video"][key])
+                for key in ("width", "height")
+            ),
             "fps": config["video"]["fps"],
+            "shake": config["shake"],
+            "channel_name": config["captions"]["channel_name"],
+            "project_settings_writable": settings_path is not None,
+            "video_formats": {
+                ratio or "default": {
+                    size: {
+                        key: with_video_format(config, ratio, preview=size == "preview")["video"][
+                            key
+                        ]
+                        for key in ("width", "height")
+                    }
+                    for size in ("full", "preview")
+                }
+                for ratio in (None, *VIDEO_FORMATS)
+            },
         }
+
+    @app.post("/api/shake/apply")
+    def apply_shake(options: ShakeOptions):
+        if settings_path is None:
+            raise HTTPException(409, "No project configuration file is attached to this server.")
+        if not render_lock.acquire(blocking=False):
+            raise HTTPException(409, "Wait for the current preview or render to finish.")
+        try:
+            try:
+                save_shake_settings(settings_path, options.model_dump())
+            except (ValueError, OSError) as exc:
+                raise HTTPException(400, f"Could not save project settings: {exc}") from exc
+            config["shake"] = options.model_dump()
+            return {"shake": config["shake"], "message": "Shake settings saved to the project."}
+        finally:
+            render_lock.release()
+
+    @app.post("/api/sessions/{session_id}/shake-preview")
+    def preview_shake(
+        session_id: str, options: ShakeOptions, aspect_ratio: AspectRatio | None = None
+    ):
+        session = get_session(session_id)
+        with session.lock:
+            session.available()
+            if not session.images:
+                raise HTTPException(400, "Upload one image to preview its shake effect.")
+            if not shutil.which("ffmpeg"):
+                raise HTTPException(400, "FFmpeg is required for shake preview.")
+            if not render_lock.acquire(blocking=False):
+                raise HTTPException(409, "Another preview or test is running.")
+            session.uploading = True
+            session.stop.clear()
+            image_path = media_path(session, session.images[0])
+        preview_id = uuid.uuid4().hex
+        work = session.directory / "shake-previews" / preview_id
+        preview_video = with_video_format(config, aspect_ratio, preview=True)["video"]
+        width, height = preview_video["width"], preview_video["height"]
+        fps = config["video"]["fps"]
+        try:
+            work.mkdir(parents=True)
+            run_ffmpeg(
+                [
+                    "-loop",
+                    "1",
+                    "-framerate",
+                    str(fps),
+                    "-i",
+                    str(image_path),
+                    "-an",
+                    "-vf",
+                    image_motion_filter(width, height, fps, 0, options.model_dump()),
+                    "-frames:v",
+                    str(6 * fps),
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-crf",
+                    "18",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-threads",
+                    "2",
+                    "-filter_threads",
+                    "1",
+                    "preview.mp4",
+                ],
+                work,
+                session.stop,
+                6,
+                lambda _: None,
+                "Shake preview",
+            )
+            with session.lock:
+                session.shake_preview = {
+                    "id": preview_id,
+                    "shake": options.model_dump(),
+                    "duration": 6,
+                    "aspect_ratio": aspect_ratio,
+                }
+                return session.snapshot()
+        except (ValueError, RuntimeError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        finally:
+            with session.lock:
+                session.uploading = False
+            render_lock.release()
+
+    @app.get("/api/sessions/{session_id}/shake-preview/{preview_id}")
+    def preview_file(session_id: str, preview_id: str):
+        session = get_session(session_id)
+        with session.lock:
+            if not session.shake_preview or session.shake_preview["id"] != preview_id:
+                raise HTTPException(404, "No shake preview for this session.")
+            return FileResponse(
+                session.directory / "shake-previews" / preview_id / "preview.mp4",
+                media_type="video/mp4",
+            )
 
     @app.post("/api/sessions", status_code=201)
     def new_session():
@@ -175,21 +355,32 @@ def create_app(config=None):
         return get_session(session_id).snapshot()
 
     @app.post("/api/sessions/{session_id}/media/{kind}", status_code=201)
-    async def upload(session_id: str, kind: Literal["image", "audio"], request: Request):
+    async def upload(session_id: str, kind: Literal["image", "video", "audio"], request: Request):
         session = get_session(session_id)
         with session.lock:
             session.available()
-            if kind == "image" and len(session.images) >= 10:
-                raise HTTPException(400, "The image buffer can hold up to 10 images.")
+            if kind == "image" and len(session.images) >= (
+                200 if request.query_params.get("style") == "story" else 10
+            ):
+                raise HTTPException(400, "A test session can hold up to 10 images.")
+            if kind == "video" and len(session.videos) >= 10:
+                raise HTTPException(400, "A test session can hold up to 10 videos.")
             session.uploading = True
         media_id = uuid.uuid4().hex
-        folder = session.image_dir if kind == "image" else session.audio_dir
+        folder = {
+            "image": session.image_dir,
+            "video": session.video_dir,
+            "audio": session.audio_dir,
+        }[kind]
         pending = folder / f"{media_id}.upload"
         final = None
         try:
             folder.mkdir(parents=True, exist_ok=True)
             name = Path(request.query_params.get("name", "upload").replace("\\", "/")).name[:150]
-            size, limit = 0, IMAGE_LIMIT if kind == "image" else AUDIO_LIMIT
+            size, limit = (
+                0,
+                {"image": IMAGE_LIMIT, "video": VIDEO_LIMIT, "audio": AUDIO_LIMIT}[kind],
+            )
             with pending.open("xb") as dest:
                 async for chunk in request.stream():
                     size += len(chunk)
@@ -215,6 +406,16 @@ def create_app(config=None):
                         return image.size
 
                 item["width"], item["height"] = await asyncio.to_thread(decode)
+            elif kind == "video":
+                duration = await asyncio.to_thread(video_duration, pending)
+                if duration > 600:
+                    raise ValueError("Use a video shorter than 10 minutes.")
+                extension = Path(name).suffix.lower()
+                if extension not in VIDEO_SUFFIXES:
+                    raise ValueError("Use an MP4, MOV, MKV, WebM, M4V or AVI video.")
+                item["duration"] = duration
+                final = folder / f"{media_id}{extension}"
+                pending.replace(final)
             else:
                 duration = await asyncio.to_thread(audio_duration, pending)
                 if duration > 600:
@@ -229,6 +430,8 @@ def create_app(config=None):
             with session.lock:
                 if kind == "image":
                     session.images.append(item)
+                elif kind == "video":
+                    session.videos.append(item)
                 else:
                     if session.audio:
                         media_path(session, session.audio).unlink(missing_ok=True)
@@ -251,7 +454,7 @@ def create_app(config=None):
     def media(session_id: str, media_id: str):
         session = get_session(session_id)
         with session.lock:
-            items = session.images + ([session.audio] if session.audio else [])
+            items = session.images + session.videos + ([session.audio] if session.audio else [])
             item = next((item for item in items if item["id"] == media_id), None)
             if item is None:
                 raise HTTPException(404, "File not found.")
@@ -262,21 +465,52 @@ def create_app(config=None):
         session = get_session(session_id)
         with session.lock:
             session.available()
-            items = session.images + ([session.audio] if session.audio else [])
+            items = session.images + session.videos + ([session.audio] if session.audio else [])
             item = next((item for item in items if item["id"] == media_id), None)
             if item is None:
                 raise HTTPException(404, "File not found.")
             media_path(session, item).unlink(missing_ok=True)
             if item["kind"] == "image":
                 session.images.remove(item)
+            elif item["kind"] == "video":
+                session.videos.remove(item)
             else:
                 session.audio = None
         return session.snapshot()
 
     def worker(session, options, run_config, run_id):
-        work = Path(config["paths"]["temp"]) / "ui-test" / session.id / run_id
-        output = Path(config["paths"]["output"]) / "ui-test" / session.id / f"{run_id}.mp4"
+        work = session.run_directory(run_id)
+        output = work / "video.mp4"
         try:
+            if options.style == "story":
+                from app.story import StoryRequest
+                from app.workflows import build_workflow
+
+                frames = story_frames(session)
+                request = StoryRequest(
+                    media_path(session, session.audio), options.script, frames, output, work
+                )
+                workflow = build_workflow(
+                    run_config, "story", request=request, transcriber=Transcriber(config["whisper"])
+                )
+                workflow.validate()
+                executor = workflow.executor(
+                    session.stop,
+                    lambda **values: session.event(
+                        values.get("stage", "Rendering story"), values.get("render_progress")
+                    ),
+                )
+                executor.run(None, None, [])
+                with session.lock:
+                    session.run.update(
+                        status="passed",
+                        video=True,
+                        progress=100,
+                        duration=audio_duration(request.audio),
+                        bytes=output.stat().st_size,
+                        composition={"style": "story"},
+                    )
+                return
             work.mkdir(parents=True, exist_ok=True)
             audio = media_path(session, session.audio)
             duration = audio_duration(audio)
@@ -293,13 +527,17 @@ def create_app(config=None):
             footage = config["footage"]
             plan = build_plan(
                 sentences_from_words(words, duration),
-                [Source(str(media_path(session, item)), "image") for item in session.images],
+                [
+                    Source(str(media_path(session, item)), item["kind"], item.get("duration", 0))
+                    for item in session.images + session.videos
+                ],
                 duration,
                 threshold=footage["minimum_words_for_new_clip"],
                 seed=options.seed,
                 avoid_repeat=footage["avoid_immediate_repetition"],
+                mode=options.mode,
             )
-            session.event(f"Timeline ready · {len(plan.footage)} image sections", 10)
+            session.event(f"Timeline ready · {len(plan.footage)} footage sections", 10)
             session.event("Building video", 10)
 
             def progress(value):
@@ -310,7 +548,11 @@ def create_app(config=None):
             session.event("Video passed the builder checks", 100)
             with session.lock:
                 session.run.update(
-                    status="passed", video=True, duration=duration, bytes=output.stat().st_size
+                    status="passed",
+                    video=True,
+                    duration=duration,
+                    bytes=output.stat().st_size,
+                    composition=json.loads((work / "composition.json").read_text()),
                 )
         except Cancelled:
             session.event("Test stopped")
@@ -332,32 +574,86 @@ def create_app(config=None):
                 log.exception("Could not save test report")
             render_lock.release()
 
+    def story_frames(session):
+        from app.story import numbered_frames
+
+        named = numbered_frames([Path(item["name"]) for item in session.images])
+        return {
+            index: media_path(
+                session, next(item for item in session.images if item["name"] == path.name)
+            )
+            for index, path in named.items()
+        }
+
+    @app.get("/api/sessions/{session_id}/alignment")
+    def alignment_report(session_id: str):
+        session = get_session(session_id)
+        if not session.run:
+            raise HTTPException(404, "No story run")
+        path = session.run_directory(session.run["id"]) / "alignment.json"
+        if not path.is_file():
+            raise HTTPException(404, "No alignment available")
+        return FileResponse(path, media_type="application/json", filename="alignment.json")
+
     @app.post("/api/sessions/{session_id}/run", status_code=202)
     def start(session_id: str, options: RunOptions):
         session = get_session(session_id)
         with session.lock:
             session.available()
-            if not 3 <= len(session.images) <= 10 or not session.audio:
+            if not session.audio:
+                raise HTTPException(400, "Add one voice recording before running a test.")
+            if options.style == "story":
+                from app.story import StoryRequest, validate_inputs
+
+                try:
+                    validate_inputs(
+                        StoryRequest(
+                            media_path(session, session.audio),
+                            options.script,
+                            story_frames(session),
+                            Path("unused"),
+                            Path("unused"),
+                        )
+                    )
+                except (ValueError, OSError) as exc:
+                    raise HTTPException(400, str(exc)) from exc
+            if (
+                options.style == "poetry"
+                and options.mode == "image"
+                and not 3 <= len(session.images) <= 10
+            ):
                 raise HTTPException(
                     400, "Add 3–10 images and one voice recording before running a test."
                 )
+            if (
+                options.style == "poetry"
+                and options.mode in ("video", "hybrid")
+                and not session.videos
+            ):
+                raise HTTPException(400, "Add at least one video for video or hybrid mode.")
+            if options.style == "poetry" and options.mode == "hybrid" and not session.images:
+                raise HTTPException(400, "Add at least one image for hybrid mode.")
             try:
                 check_transcription_config(config)
+                if options.style == "poetry":
+                    check_render_config(config)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
-            if not info()["ffmpeg"] or not info()["font"]:
+            if not info()["ffmpeg"] or (options.style == "poetry" and not info()["font"]):
                 raise HTTPException(
                     400, "FFmpeg, FFprobe and the configured caption font are required."
                 )
             if not render_lock.acquire(blocking=False):
                 raise HTTPException(409, "Another test is running. Wait for it to finish.")
-            run_config = copy.deepcopy(config)
-            if options.size == "preview":
-                scale = 360 / config["video"]["width"]
-                height = max(2, round(config["video"]["height"] * scale / 2) * 2)
-                run_config["video"].update(width=360, height=height, preset="ultrafast")
-                for field in ("font_size", "safe_margin", "outline_width"):
-                    run_config["captions"][field] = max(1, round(config["captions"][field] * scale))
+            run_config = with_video_format(
+                config, options.aspect_ratio, preview=options.size == "preview"
+            )
+            # The test seed reproduces both image selection and the music choice.
+            run_config["footage"]["random_seed"] = options.seed
+            run_config["footage"]["mode"] = options.mode
+            run_config["captions"]["channel_name"] = options.channel_name
+            if options.shake is not None:
+                run_config["shake"] = options.shake.model_dump()
             run_id = uuid.uuid4().hex
             session.stop.clear()
             session.run = {
@@ -401,7 +697,7 @@ def create_app(config=None):
         with session.lock:
             if not session.run or session.run["id"] != run_id or not session.run["video"]:
                 raise HTTPException(404, "No completed video for this test.")
-            path = Path(config["paths"]["output"]) / "ui-test" / session.id / f"{run_id}.mp4"
+            path = session.run_directory(run_id) / "video.mp4"
             return FileResponse(
                 path, media_type="video/mp4", filename="video-test.mp4" if download else None
             )

@@ -11,5 +11,9 @@
 !assets/fonts/
 !assets/fonts/*.ttf
 !assets/fonts/LICENSE.txt
+!assets/music/
+!assets/music/*.mp3
+!assets/overlays/
+!assets/overlays/*.mp4
 !tests/
 !tests/*.py

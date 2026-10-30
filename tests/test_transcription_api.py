@@ -28,6 +28,50 @@ def test_restores_sentence_punctuation_without_changing_timestamps():
     assert len(sentences_from_words(result.words, 3)) == 2
 
 
+@pytest.mark.parametrize("timed", [True, False])
+@pytest.mark.parametrize("opening,closing", [("«", "»,"), ("“", "”!"), ("（", "）。")])
+def test_standalone_punctuation_uses_full_text_without_changing_speech_timing(
+    opening, closing, timed
+):
+    data = payload()
+    data["text"] = f"{opening}Hello there{closing} Yes!"
+    punctuation = [{"word": opening}, {"word": closing}]
+    if timed:
+        punctuation[0].update(start=0, end=0)
+        punctuation[1].update(start=1, end=1.1)
+    data["words"].insert(0, punctuation[0])
+    data["words"].insert(3, punctuation[1])
+
+    result = normalize_response(data, 3)
+
+    assert [w.text for w in result.words] == [f"{opening}Hello", f"there{closing}", "Yes!"]
+    assert [(w.start, w.end) for w in result.words] == [(0, 0.5), (0.5, 1), (2, 2.5)]
+    assert len(data["words"]) == 5, "Normalization must leave the API response intact"
+
+
+@pytest.mark.parametrize("token", ["", " ", "💬", "\u0301"])
+def test_punctuation_handling_does_not_hide_invalid_word_entries(token):
+    data = payload()
+    data["words"].insert(0, {"word": token, "start": 0, "end": 0})
+    with pytest.raises(ValueError, match="invalid word at index 0"):
+        normalize_response(data, 3)
+
+
+def test_punctuation_handling_still_requires_timestamps_for_spoken_words():
+    data = payload()
+    data["words"].insert(0, {"word": "«"})
+    data["words"][1].pop("start")
+    with pytest.raises(ValueError, match="missing word timestamps at index 1"):
+        normalize_response(data, 3)
+
+
+def test_punctuation_handling_still_requires_all_spoken_text_to_align():
+    data = payload()
+    data["words"][0] = {"word": "«"}
+    with pytest.raises(ValueError, match="does not align"):
+        normalize_response(data, 3)
+
+
 @pytest.mark.parametrize("overrun", [0.2, 0.28, 0.5])
 def test_small_end_overruns_are_clipped_without_changing_other_timestamps(overrun):
     data = payload()

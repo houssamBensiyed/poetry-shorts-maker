@@ -74,6 +74,23 @@ class MediaPipeline:
 
         stage("Downloading")
         self.downloader.download(job.voice_link, workspace.audio)
+        self.run_local(workspace, sources, stop, report)
+
+    def run_local(
+        self,
+        workspace: Workspace,
+        sources: Sequence[Source],
+        stop: Event,
+        report: Reporter,
+    ) -> None:
+        """Render already-buffered audio without downloading or updating providers."""
+
+        def stage(name: str) -> None:
+            check_cancel(stop)
+            report(stage=name, render_progress=None)
+            log.info("%s", name)
+
+        check_cancel(stop)
         duration = self.duration(workspace.audio)
         stage("Transcribing")
         transcript = self.transcriber.transcribe(workspace.audio, duration, stop, workspace.work)
@@ -83,7 +100,7 @@ class MediaPipeline:
         log.info(
             "Created %d footage intervals and %d captions", len(plan.footage), len(plan.captions)
         )
-        stage("Downloading selected images")
+        stage("Resolving selected images")
         plan = self.resolve(plan, workspace.images, stop)
         stage("Rendering")
         last_bucket = -1

@@ -5,10 +5,35 @@ let info = null;
 let busy = false;
 let connected = false;
 let imageKey = "";
+let sourceVideoKey = "";
 let audioKey = "";
 let eventKey = "";
 let videoKey = "";
 let pollTimer;
+let shakePreviewKey = "";
+const shakeInputs = ["shake-enabled", "shake-zoom", "shake-x", "shake-y", "shake-period-x", "shake-period-y"];
+
+function shakeSettings() {
+  return {
+    enabled: $("shake-enabled").checked,
+    zoom: Number($("shake-zoom").value) / 100,
+    amplitude_x: Number($("shake-x").value) / 100,
+    amplitude_y: Number($("shake-y").value) / 100,
+    period_x: Number($("shake-period-x").value),
+    period_y: Number($("shake-period-y").value),
+  };
+}
+function validShake() {
+  return shakeInputs.every(id => $(id).checkValidity() && $(id).value !== "");
+}
+function setShake(settings) {
+  $("shake-enabled").checked = settings.enabled;
+  $("shake-zoom").value = settings.zoom * 100;
+  $("shake-x").value = settings.amplitude_x * 100;
+  $("shake-y").value = settings.amplitude_y * 100;
+  $("shake-period-x").value = settings.period_x;
+  $("shake-period-y").value = settings.period_y;
+}
 const storage = {
   get(key) {
     try {
@@ -94,12 +119,28 @@ async function api(path, options = {}) {
   return result;
 }
 function updateChecks() {
-  const imagesReady = session.images.length >= 3 && session.images.length <= 10;
+  const formats = info?.video_formats?.[$("aspect-ratio").value];
+  if (formats) {
+    $("full-size").textContent = `${formats.full.width} × ${formats.full.height} · Full size`;
+    $("size").options[0].textContent = `${formats.preview.width} × ${formats.preview.height} · Fast preview`;
+  }
+  const story = $("style").value === "story";
+  $("story-inputs").hidden = !story;
+  $("shake-editor").hidden = story;
+  const mode = $("mode").value;
+  const imagesReady = mode === "video" || session.images.length >= (mode === "hybrid" ? 1 : 3);
+  const videosReady = mode === "image" || session.videos.length >= 1;
+  const footageReady = story ? session.images.length > 0 && $("story-script").value.trim() !== "" : imagesReady && videosReady;
+  const requirement = story ? "a script and its numbered frames" : mode === "image" ? "3–10 images" : mode === "video" ? "1–10 videos" : "at least one image and one video";
+  $("images-card").hidden = !story && mode === "video";
+  $("videos-card").hidden = story || mode === "image";
+  $("image-requirement").textContent = mode === "hybrid" ? "1–10 images required" : "3–10 images required";
+  $("check-footage-text").textContent = `Add ${requirement} to this test session`;
   const audioReady = Boolean(session.audio);
-  const toolsReady = info?.ffmpeg && info?.font;
+  const toolsReady = info?.ffmpeg && (story || (info?.font && info?.assets));
   for (const [id, ready] of [
-    ["check-images", imagesReady],
-    ["step-images", imagesReady],
+    ["check-images", footageReady],
+    ["step-images", footageReady],
     ["check-audio", audioReady],
     ["step-audio", audioReady],
     ["check-tools", toolsReady],
@@ -109,10 +150,44 @@ function updateChecks() {
     $(id).classList.toggle("complete", Boolean(ready));
   }
   const locked = Boolean(busy || active() || session.uploading);
+  $("style").disabled = locked;
+  $("story-script").disabled = locked;
+  $("alignment-link").hidden = !story || !session.run;
+  $("alignment-link").href = `${base()}/alignment`;
   document.body.classList.toggle("busy", locked);
-  for (const id of ["image-drop", "audio-drop", "remove-audio", "size", "seed"])
+  for (const id of ["image-drop", "video-drop", "audio-drop", "remove-audio", "mode", "size", "aspect-ratio", "seed", "channel-name", ...shakeInputs])
     $(id).disabled = locked;
-  $("image-drop").disabled = locked || session.images.length >= 10;
+  $("mode").disabled = locked || story;
+  $("channel-name").disabled = locked || story;
+  $("seed").disabled = locked || story;
+  $("image-drop").disabled = locked || session.images.length >= (story ? 200 : 10);
+  if (story) {
+    $("image-requirement").textContent = "Numbered frames matching the script";
+    $("check-footage-text").textContent = "Script and numbered frames uploaded";
+  }
+  $("video-drop").disabled = locked || session.videos.length >= 10;
+  $("shake-preview-button").disabled = locked || !connected || !info?.ffmpeg || !session.images.length || !validShake();
+  $("shake-apply").disabled = locked || !connected || !validShake() || !info?.project_settings_writable;
+  $("shake-apply-status").textContent = !info?.project_settings_writable
+    ? "Project saving is unavailable for this isolated test server."
+    : JSON.stringify(info.shake) === JSON.stringify(shakeSettings())
+      ? "These settings match the saved project defaults."
+      : "Unsaved changes. Apply to project to save these settings.";
+  $("shake-zoom-value").textContent = `${$("shake-zoom").value}%`;
+  $("shake-x-value").textContent = `${$("shake-x").value}%`;
+  $("shake-y-value").textContent = `${$("shake-y").value}%`;
+  const preview = session.shake_preview;
+  if (preview && preview.id !== shakePreviewKey) {
+    shakePreviewKey = preview.id;
+    $("shake-player").src = `${base()}/shake-preview/${preview.id}`;
+    $("shake-player").hidden = false;
+  }
+  $("shake-status").textContent = busy ? "Working…" : !validShake()
+    ? "Enter cycle times between 0.2 and 30 seconds."
+    : !session.images.length ? "Upload one image to preview its shake. No voice or transcription needed."
+    : preview ? (JSON.stringify(preview.shake) === JSON.stringify(shakeSettings()) && preview.aspect_ratio === selectedAspectRatio()
+      ? "Preview matches the current settings." : "Settings changed — preview again to see the new movement.")
+    : "Ready to preview six seconds of image motion.";
   document
     .querySelectorAll(".remove-image")
     .forEach((button) => (button.disabled = locked));
@@ -120,10 +195,11 @@ function updateChecks() {
   $("run").disabled =
     locked ||
     !connected ||
-    !imagesReady ||
+    !footageReady ||
     !audioReady ||
     !toolsReady ||
     !info?.speech ||
+    (!story && !validShake()) ||
     !validSeed;
   $("run").hidden = Boolean(active());
   $("stop").hidden = !active();
@@ -134,25 +210,44 @@ function updateChecks() {
     ? "Run again"
     : "Run test";
   $("run-hint").textContent = active()
-    ? "Building from the files in your buffer."
+    ? "Building from the files in your test session."
     : busy
-      ? "Saving your files to the buffer…"
+      ? "Saving your test files to temporary storage…"
       : !connected
         ? "Reconnect to the test server to continue."
         : !toolsReady
-          ? "FFmpeg and the caption font are required."
-          : !imagesReady || !audioReady
-            ? "Add 3–10 images and a voice recording."
+          ? info?.assets_error || "FFmpeg and the caption font are required."
+          : !footageReady || !audioReady
+            ? `Add ${requirement} and a voice recording.`
             : !info?.speech
               ? "Set up the Whisper API before running a test."
               : !validSeed
-                ? "Enter a valid image selection seed."
+                ? "Enter a valid footage selection seed."
                 : "Everything is ready. Start your test.";
 }
 function renderMedia() {
-  $("image-count").textContent = `${session.images.length} / 10`;
+  $("source-video-count").textContent = `${session.videos.length} / 10`;
+  const nextSourceVideoKey = session.videos.map((item) => item.id).join(",");
+  if (nextSourceVideoKey !== sourceVideoKey) {
+    sourceVideoKey = nextSourceVideoKey;
+    $("source-video-grid").replaceChildren(...session.videos.map((item) => {
+      const wrapper = node("div", "image-item");
+      const video = node("video", "source-video");
+      video.src = `${base()}/media/${item.id}`;
+      video.controls = true;
+      video.muted = true;
+      video.preload = "metadata";
+      const remove = node("button", "text-link remove-image", "Remove");
+      remove.type = "button";
+      remove.setAttribute("aria-label", `Remove ${item.name}`);
+      remove.addEventListener("click", () => removeMedia(item.id));
+      wrapper.append(video, node("div", "image-name", item.name), remove);
+      return wrapper;
+    }));
+  }
+  $("image-count").textContent = `${session.images.length} / ${$("style").value === "story" ? 200 : 10}`;
   $("image-status").textContent = session.images.length
-    ? `${session.images.length} saved to buffer`
+    ? `${session.images.length} saved to temporary storage`
     : "Waiting for images";
   $("image-status").classList.toggle("saved", session.images.length > 0);
   const nextImageKey = session.images.map((item) => item.id).join(",");
@@ -190,7 +285,7 @@ function renderMedia() {
     if (session.audio) {
       $("audio-name").textContent = session.audio.name;
       $("audio-details").textContent =
-        `${duration(session.audio.duration)} · ${bytes(session.audio.bytes)} · Saved to buffer`;
+        `${duration(session.audio.duration)} · ${bytes(session.audio.bytes)} · Saved to temporary storage`;
       $("audio-player").src = `${base()}/media/${session.audio.id}`;
     } else {
       $("audio-player").pause();
@@ -201,7 +296,7 @@ function renderMedia() {
   $("audio-file").hidden = !session.audio;
   $("audio-drop").hidden = Boolean(session.audio);
   $("audio-status").textContent = session.audio
-    ? "Saved to buffer"
+    ? "Saved to temporary storage"
     : "Waiting for voice";
   $("audio-status").classList.toggle("saved", Boolean(session.audio));
 }
@@ -282,16 +377,22 @@ function renderRun() {
     : run?.status === "failed"
       ? "See the error in Test progress."
       : "Run a test to see the result.";
+  const dimensions = info?.video_formats?.[$("aspect-ratio").value]?.[$("size").value];
   $("resolution").textContent = run
     ? `${run.width} × ${run.height}`
-    : $("size").value === "full"
-      ? info?.full_size
-      : info?.preview_size || "360 × 640";
+    : dimensions ? `${dimensions.width} × ${dimensions.height}` : "—";
   $("fps").textContent = `${run?.fps || info?.fps || 30} fps`;
   $("duration").textContent = duration(
     run?.duration ?? session.audio?.duration,
   );
   if (run) $("video-frame").style.aspectRatio = `${run.width}/${run.height}`;
+  else if (dimensions) $("video-frame").style.aspectRatio = `${dimensions.width}/${dimensions.height}`;
+  const displayed = run || dimensions;
+  if (displayed) {
+    let a = displayed.width, b = displayed.height;
+    while (b) [a, b] = [b, a % b];
+    $("ratio-badge").textContent = `${displayed.width / a}:${displayed.height / a}`;
+  }
 }
 function updateSoundStatus() {
   const player = $("video-player");
@@ -349,7 +450,7 @@ async function upload(files, kind) {
   files = [...files];
   if (!files.length) return;
   clearError();
-  if (kind === "image" && session.images.length + files.length > 10)
+  if (kind === "image" && session.images.length + files.length > ($("style").value === "story" ? 200 : 10))
     return showError(
       new Error(
         "Choose no more than 10 images in total. Remove an image to make room.",
@@ -357,7 +458,9 @@ async function upload(files, kind) {
     );
   if (kind === "audio" && files.length !== 1)
     return showError(new Error("Choose one voice recording."));
-  const limit = kind === "image" ? 20 : 100;
+  if (kind === "video" && session.videos.length + files.length > 10)
+    return showError(new Error("Choose no more than 10 videos in total."));
+  const limit = kind === "image" ? 20 : kind === "video" ? 256 : 100;
   if (files.some((file) => file.size > limit * 1024 * 1024))
     return showError(new Error(`Each file must be smaller than ${limit} MB.`));
   busy = true;
@@ -370,7 +473,7 @@ async function upload(files, kind) {
         `Saving ${index + 1} of ${files.length}: ${file.name}`;
       try {
         session = await api(
-          `${base()}/media/${kind}?name=${encodeURIComponent(file.name)}`,
+          `${base()}/media/${kind}?name=${encodeURIComponent(file.name)}&style=${$("style").value}`,
           {
             method: "POST",
             body: file,
@@ -396,7 +499,7 @@ async function upload(files, kind) {
     render();
   }
 }
-for (const kind of ["image", "audio"]) {
+for (const kind of ["image", "video", "audio"]) {
   const input = $(`${kind}-input`);
   const drop = $(`${kind}-drop`);
   drop.addEventListener("click", () => input.click());
@@ -425,7 +528,40 @@ $("remove-audio").addEventListener(
   "click",
   () => session.audio && removeMedia(session.audio.id),
 );
-for (const id of ["size", "seed"]) $(id).addEventListener("input", render);
+function selectedAspectRatio() {
+  return $("aspect-ratio").value === "default" ? null : $("aspect-ratio").value;
+}
+for (const id of ["style", "story-script", "mode", "size", "aspect-ratio", "seed", "channel-name", ...shakeInputs]) $(id).addEventListener("input", render);
+$("shake-preview-button").addEventListener("click", async () => {
+  busy = true;
+  clearError();
+  render();
+  try {
+    const query = selectedAspectRatio() ? `?aspect_ratio=${encodeURIComponent(selectedAspectRatio())}` : "";
+    session = await api(`${base()}/shake-preview${query}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(shakeSettings()),
+    });
+  } catch (error) { showError(error); }
+  finally {
+    busy = false;
+    try { session = await api(base()); } catch (error) { showError(error); }
+    render();
+  }
+});
+$("shake-apply").addEventListener("click", async () => {
+  busy = true;
+  clearError();
+  render();
+  try {
+    const settings = await api("/api/shake/apply", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(shakeSettings()),
+    });
+    info.shake = settings.shake;
+  } catch (error) { showError(error); }
+  finally { busy = false; render(); }
+});
 $("run").addEventListener("click", async () => {
   if ($("run").disabled) return;
   busy = true;
@@ -437,7 +573,13 @@ $("run").addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         size: $("size").value,
+        aspect_ratio: selectedAspectRatio(),
+        mode: $("mode").value,
+        style: $("style").value,
+        script: $("story-script").value,
         seed: Number($("seed").value),
+        shake: $("style").value === "story" ? null : shakeSettings(),
+        channel_name: $("channel-name").value,
       }),
     });
   } catch (error) {
@@ -459,6 +601,8 @@ $("stop").addEventListener("click", async () => {
 });
 async function connect() {
   info = await api("/api/info");
+  setShake(info.shake);
+  $("channel-name").value = info.channel_name;
   $("full-size").textContent = `${info.full_size} · Full size`;
   $("size").options[0].textContent = `${info.preview_size} · Fast preview`;
   $("speech-status").value = info.speech_model
@@ -489,7 +633,13 @@ async function poll() {
     if (error.status === 404) {
       session = null;
       imageKey = audioKey = eventKey = videoKey = "";
+      sourceVideoKey = "";
+      shakePreviewKey = "";
+      $("shake-player").pause();
+      $("shake-player").removeAttribute("src");
+      $("shake-player").hidden = true;
       $("image-grid").replaceChildren();
+      $("source-video-grid").replaceChildren();
       for (const id of ["audio-player", "video-player"]) {
         $(id).pause();
         $(id).removeAttribute("src");

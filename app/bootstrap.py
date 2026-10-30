@@ -1,52 +1,28 @@
-"""Select and assemble the default providers at the composition boundary.
-
-Application services consume protocols and injected callables; this module knows
-that the defaults use Baserow, direct downloads, hosted transcription, FFmpeg and
-Cloudinary. Replace dependencies here or supply ProcessingServices to Processor
-when adding another provider, rather than adding provider logic to the queue.
-"""
+"""Compose the local buffer worker; remote automation is opt-in and separate."""
 
 from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import replace
-from functools import partial
 from pathlib import Path
 from threading import Event
 from typing import Any
 
-from app.artifacts import Workspace
-from app.config import check_job_config
+from app.buffer import BufferRunner, VoiceBuffer
+from app.config import check_render_config, check_transcription_config
 from app.contracts import ProcessingServices, Progress, Reporter
 from app.downloads import Downloader
-from app.execution import JobRunner
-from app.footage import audio_duration
+from app.footage import LocalFootage, audio_duration
 from app.images import download_images
-from app.jobs import JobTable
 from app.models import Transcript
 from app.pipeline import MediaPipeline
 from app.timeline import Plan, Source, build_plan, sentences_from_words
 from app.transcription import Transcriber
-from app.uploads import Uploader
 from app.video_builder import render
 
 
-class BaserowImageCatalog:
-    """Adapt Baserow image URLs to the independent SourceCatalog interface."""
-
-    def __init__(self, table: JobTable) -> None:
-        """Retain the configured table adapter; defer catalog I/O until sources()."""
-        self.table = table
-
-    def sources(self) -> Sequence[Source]:
-        """Read usable image links as unresolved image Sources.
-
-        Downloads happen after random selection, keeping the catalog read lightweight
-        even when the image table is much larger than a job's chosen image set.
-        """
-        return [Source(url, "image") for url in self.table.image_urls()]
-
-
-def build_media_pipeline(config: dict[str, Any], stop: Event) -> MediaPipeline:
+def build_media_pipeline(
+    config: dict[str, Any], stop: Event, *, local: bool = False
+) -> MediaPipeline:
     """Build the default media dependencies around a private config snapshot.
 
     Args:
@@ -75,6 +51,7 @@ def build_media_pipeline(config: dict[str, Any], stop: Event) -> MediaPipeline:
             footage["minimum_words_for_new_clip"],
             footage["random_seed"],
             footage["avoid_immediate_repetition"],
+            mode=footage["mode"] if local else None,
         )
 
     def resolve(plan: Plan, directory: Path, stop: Event) -> Plan:
@@ -83,6 +60,8 @@ def build_media_pipeline(config: dict[str, Any], stop: Event) -> MediaPipeline:
         Deduplicate URLs in first-use order, download each once, and preserve all
         interval boundaries and repeated selections when replacing source values.
         """
+        if local:
+            return plan
         urls = list(dict.fromkeys(interval.source.path for interval in plan.footage))
         selected = download_images(urls, directory, downloader, stop)
         mapping = dict(zip(urls, selected, strict=True))
@@ -110,39 +89,32 @@ def build_media_pipeline(config: dict[str, Any], stop: Event) -> MediaPipeline:
 
 
 def build_services(config: dict[str, Any]) -> ProcessingServices:
-    """Return lazy default factories using a deep copy of configuration.
+    """Use numbered local voices and the configured shared footage pools.
 
-    The queue identity combines the Baserow API URL and audio table ID so the
-    dashboard and API contend for the same local run lock. Factory construction
-    performs no provider requests; validation is deferred until a run starts.
+    Baserow and Cloudinary are neither constructed nor validated here. Empty
+    queues are successful no-ops, including when transcription is unconfigured.
     """
     config = deepcopy(config)
+    buffer = VoiceBuffer(config["paths"]["buffer"])
 
-    def repository(stop: Event | None) -> JobTable:
-        """Create a Baserow adapter with optional cancellation for this operation."""
-        return JobTable(config["baserow"], stop)
+    def validate_voice() -> None:
+        check_render_config(config)
+        check_transcription_config(config)
 
-    def executor(stop: Event, report: Reporter) -> JobRunner:
-        """Assemble media, publisher and workspace factory for a processing run.
-
-        All jobs in the run share the stop event and reporter, while each attempt
-        obtains unique artifact paths from the workspace factory.
-        """
-        media = build_media_pipeline(config, stop)
-        return JobRunner(
-            media,
-            Uploader(config["cloudinary"], stop),
-            partial(Workspace.for_job, config["paths"]),
+    def executor(stop: Event, report: Reporter) -> BufferRunner:
+        return BufferRunner(
+            buffer,
+            build_media_pipeline(config, stop, local=True),
+            config["paths"],
             stop,
             report,
+            validate_voice,
         )
 
     return ProcessingServices(
-        identity=config["baserow"]["api_url"].rstrip("/")
-        + "/"
-        + str(config["baserow"]["table_id"]),
-        repository=repository,
-        catalog=lambda stop: BaserowImageCatalog(repository(stop)),
+        identity=buffer.identity,
+        repository=lambda stop: buffer,
+        catalog=lambda stop: LocalFootage(config, stop),
         executor=executor,
-        validate=partial(check_job_config, config),
+        validate=lambda: None,
     )

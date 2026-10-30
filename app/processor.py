@@ -8,7 +8,7 @@ injected through ProcessingServices so the coordinator only schedules work.
 
 import logging
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from typing import Any
 
@@ -46,11 +46,12 @@ class Processor:
         credentials and network access are deferred until refresh or start.
         """
         self.config = deepcopy(config)
+        self.default_services = services is None
         if services is None:
             # Compatibility entry point; adapter construction lives in one composition module.
-            from app.bootstrap import build_services
+            from app.workflows import build_workflow
 
-            services = build_services(self.config)
+            services = build_workflow(self.config)
         self.services = services
         self.state = State()
         self.stop_event = threading.Event()
@@ -97,31 +98,82 @@ class Processor:
                 return {**self.run_lock.external_state(), "external_process": True}
             return {**self.state.snapshot(), "external_process": False}
 
-    def start(self) -> bool:
+    def start(
+        self,
+        *,
+        prepare: Callable[[threading.Event], None] | None = None,
+        empty_message: str | None = None,
+        mode: str | None = None,
+        channel_name: str | None = None,
+        style: str = "poetry",
+        section: str | None = None,
+        aspect_ratio: str | None = None,
+    ) -> bool:
         """Acquire queue ownership and launch a non-daemon worker thread.
 
         Return False if closed, refreshing, locally active, or locked by another
         process. True means the worker started, not that validation or jobs succeeded.
         On thread-start failure, publish local error state, release the lock and
         re-raise so a broken start cannot leave the queue permanently claimed.
+        Optional preparation runs in the worker under the queue lock and shares
+        cancellation. empty_message rejects an empty queue after preparation;
+        omitted, an empty batch remains a successful no-op for polling callers.
+        mode selects a private local composition for this run without changing
+        defaults. Injected custom services own their mode policy and reject overrides.
         """
         with self.guard:
             if self.closed or self.refreshing or self.active:
                 return False
+            services = self.services
+            run_config = self.config
+            if style not in ("poetry", "story"):
+                raise ValueError("Style must be poetry or story")
+            if (
+                mode is not None
+                or channel_name is not None
+                or style == "story"
+                or aspect_ratio is not None
+            ):
+                if mode is not None and mode not in ("image", "video", "hybrid"):
+                    raise ValueError("Footage mode must be image, video or hybrid")
+                if not self.default_services:
+                    raise ValueError("Mode overrides require the default local composition")
+                from app.config import normalize_channel_name
+                from app.video_format import with_video_format
+                from app.workflows import build_workflow
+
+                run_config = with_video_format(self.config, aspect_ratio)
+                if mode is not None:
+                    run_config["footage"]["mode"] = mode
+                if channel_name is not None:
+                    run_config["captions"]["channel_name"] = normalize_channel_name(channel_name)
+                services = build_workflow(run_config, style, section)
             if not self.run_lock.acquire():
                 return False
             try:
                 self.stop_event.clear()
                 self.update(
                     status="processing",
-                    stage="Connecting to job repository",
+                    stage="Reading job queue",
                     error="",
                     current_job=None,
+                    output="",
+                    work="",
                     voiceover="",
                     render_progress=None,
+                    mode=mode or self.config["footage"]["mode"],
+                    style=style,
+                    width=run_config["video"]["width"],
+                    height=run_config["video"]["height"],
+                    channel_name=channel_name
+                    if channel_name is not None
+                    else self.config["captions"]["channel_name"],
                 )
                 self.thread = threading.Thread(
-                    target=self._run, name="video-processor", daemon=False
+                    target=self._run,
+                    args=(prepare, empty_message, services),
+                    name="video-processor",
+                    daemon=False,
                 )
                 self.thread.start()
             except Exception as exc:
@@ -192,7 +244,12 @@ class Processor:
             failed=sum(j.status == "FAILED" for j in jobs),
         )
 
-    def _run(self) -> None:
+    def _run(
+        self,
+        prepare: Callable[[threading.Event], None] | None = None,
+        empty_message: str | None = None,
+        services: ProcessingServices | None = None,
+    ) -> None:
         """Validate services, snapshot the queue and execute pending jobs in order.
 
         Read the source catalog once only when work exists. Decrement pending as
@@ -201,13 +258,21 @@ class Processor:
         exception stops the batch and becomes visible error state. Clear transient
         fields and release ownership in finally, including after cancellation.
         """
+        services = services if services is not None else self.services
         try:
-            self.services.validate()
             check_cancel(self.stop_event)
-            repository = self.services.repository(self.stop_event)
+            if prepare is not None:
+                self.update(stage="Preparing voice buffer")
+                prepare(self.stop_event)
+                check_cancel(self.stop_event)
+            services.validate()
+            check_cancel(self.stop_event)
+            repository = services.repository(self.stop_event)
             jobs = repository.jobs()
             self.update(**self._counts(jobs))
             pending = [job for job in jobs if job.status == "NOT_PROCESSED"]
+            if not pending and empty_message is not None:
+                raise ValueError(empty_message)
             stuck = sum(job.status == "PROCESSING" for job in jobs)
             if stuck:
                 log.warning(
@@ -215,8 +280,8 @@ class Processor:
                 )
             log.info("Found %d pending jobs", len(pending))
             if pending:
-                sources = self.services.catalog(self.stop_event).sources()
-                executor = self.services.executor(self.stop_event, self.update)
+                sources = services.catalog(self.stop_event).sources()
+                executor = services.executor(self.stop_event, self.update)
                 for job in pending:
                     check_cancel(self.stop_event)
                     self.update(

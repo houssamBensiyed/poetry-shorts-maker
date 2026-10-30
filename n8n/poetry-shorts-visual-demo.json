@@ -113,7 +113,7 @@
       "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  const name = 'row-' + data.job.row + '-demo';\n  data.workspace = {work: 'temp/' + name, audio: 'buffer/voiceovers/' + name + '.audio',\n                    images: 'buffer/images/' + name, output: 'output/' + name + '.mp4'};\n  data.job.status = 'PROCESSING';\n  data.history.push({stage: 'PROCESSING', result: 'simulated'});\n  return {json: data, pairedItem: {item: index}};\n});"
+        "jsCode": "return $input.all().map((item, index) => {\n  const data = JSON.parse(JSON.stringify(item.json));\n  const name = 'row-' + data.job.row + '-demo';\n  data.workspace = {work: 'temp/' + name, audio: 'buffer/voiceovers/' + name + '.audio',\n                    images: 'temp/' + name + '/images', output: 'output/' + name + '.mp4'};\n  data.job.status = 'PROCESSING';\n  data.history.push({stage: 'PROCESSING', result: 'simulated'});\n  return {json: data, pairedItem: {item: index}};\n});"
       },
       "id": "e7aeedca-486c-563d-9af6-695f47da4ace",
       "name": "Create Workspace and Mark PROCESSING",

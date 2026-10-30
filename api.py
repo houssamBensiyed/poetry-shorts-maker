@@ -10,14 +10,16 @@ import asyncio
 import hmac
 import os
 from contextlib import asynccontextmanager
+from typing import Literal
 
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-from app.config import load_config
+from app.config import load_config, normalize_channel_name
 from app.logger import configure
 from app.processor import Processor
+from app.video_format import AspectRatio
 
 
 def create_app(config=None, processor=None):
@@ -35,7 +37,9 @@ def create_app(config=None, processor=None):
     config = config or load_config()
     key = os.environ.get("VIDEO_BUILDER_API_KEY", "")
     if not key:
-        raise ValueError("Set VIDEO_BUILDER_API_KEY in your environment before starting the API")
+        raise ValueError(
+            "Set VIDEO_BUILDER_API_KEY in the project's .env or export it before starting the API"
+        )
     processor = processor or Processor(config)
 
     @asynccontextmanager
@@ -63,14 +67,34 @@ def create_app(config=None, processor=None):
             raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
 
     @app.get("/run", dependencies=[Depends(authenticate)])
-    def run():
+    def run(
+        mode: Literal["image", "video", "hybrid"] | None = None,
+        channel_name: str | None = Query(default=None, max_length=80),
+        style: Literal["poetry", "story"] = "poetry",
+        section: str | None = None,
+        aspect_ratio: AspectRatio | None = None,
+    ):
         """Request a manual run and return an uncached acknowledgement.
 
         HTTP 202 means a worker was started, not that jobs finished successfully.
         A refused start returns already_running; clients use /status to monitor work.
         Because this GET has a side effect, it is intended for explicit API triggers.
         """
-        if not processor.start():
+        overrides = {}
+        if aspect_ratio is not None:
+            overrides["aspect_ratio"] = aspect_ratio
+        if style == "story":
+            if not section:
+                raise HTTPException(422, "Story style requires a section directory")
+            overrides.update(style=style, section=section)
+        if mode is not None:
+            overrides["mode"] = mode
+        if channel_name is not None:
+            try:
+                overrides["channel_name"] = normalize_channel_name(channel_name)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        if not processor.start(**overrides):
             return JSONResponse(
                 {"status": "already_running"}, headers={"Cache-Control": "no-store"}
             )

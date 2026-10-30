@@ -8,6 +8,7 @@ original buffered audio remains the finished video's voiceover.
 
 import logging
 import os
+import unicodedata
 from pathlib import Path
 
 import httpx
@@ -34,6 +35,8 @@ def normalize_response(data, duration):
     tokens before slicing punctuation back into words. Alignment crosses segment
     boundaries so provider segmentation cannot dictate sentence cuts. Validate
     word ordering and segment bounds, then return an immutable Transcript wrapper.
+    Ignore standalone punctuation entries in the words array: punctuation is
+    restored from full text and does not need its own speech timing.
     Clip word and segment ends up to 0.5 seconds past the audio boundary, only
     when they start inside the recording. Check word ordering before clipping
     so normalization cannot hide reversed provider timestamps. Segment
@@ -60,22 +63,27 @@ def normalize_response(data, duration):
             for normalized in char.casefold():
                 canonical.append(normalized)
                 positions.append(index)
-    tokens = []
-    for word in raw:
+    tokens, timed_words = [], []
+    for index, word in enumerate(raw):
         if not isinstance(word, dict) or not isinstance(word.get("word"), str):
             raise ValueError("Transcription API returned an invalid word")
         token = "".join(c.casefold() for c in word.get("word", "") if c.isalnum())
-        if not token or word.get("start") is None or word.get("end") is None:
-            raise ValueError(
-                "Transcription API returned an invalid word or missing word timestamps"
-            )
+        if not token:
+            if word["word"].strip() and all(
+                c.isspace() or unicodedata.category(c).startswith("P") for c in word["word"]
+            ):
+                continue
+            raise ValueError(f"Transcription API returned an invalid word at index {index}")
+        if word.get("start") is None or word.get("end") is None:
+            raise ValueError(f"Transcription API returned missing word timestamps at index {index}")
         tokens.append(token)
+        timed_words.append(word)
     if "".join(tokens) != "".join(canonical):
         raise ValueError(
             "Transcription text does not align with timestamped words; cannot safely restore punctuation"
         )
     words, cursor, start_char = [], 0, 0
-    for word, token in zip(raw, tokens, strict=True):
+    for word, token in zip(timed_words, tokens, strict=True):
         cursor += len(token)
         end_char = positions[cursor] if cursor < len(positions) else len(text)
         words.append(
@@ -161,7 +169,8 @@ class Transcriber:
         key = os.environ.get(self.config["api_key_env"], "")
         if not key:
             raise ValueError(
-                f"Set {self.config['api_key_env']} securely in the environment for transcription"
+                f"Set {self.config['api_key_env']} in the project's .env or export it "
+                "in the environment for transcription, then restart the application"
             )
         # Direct downloads have no reliable extension. A lossless ASR copy also
         # avoids unsupported input containers; the original remains the render audio.

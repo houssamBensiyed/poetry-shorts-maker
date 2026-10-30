@@ -10,6 +10,16 @@ from pathlib import Path
 
 from PIL import ImageFont
 
+from app.config import normalize_channel_name
+
+
+def channel_metrics(cap, video):
+    """8 pt at 96 DPI on a 1080-pixel short edge, independent of orientation."""
+    scale = min(video["width"], video.get("height", video["width"])) / 1080
+    size = 8 * 96 / 72 * scale
+    gap = 6 * scale
+    return size, gap, size * 1.5 + gap
+
 
 def layout(words, config, video):
     """Choose the largest fitting font size and return (size, word-index lines).
@@ -26,6 +36,8 @@ def layout(words, config, video):
     cap = config
     usable = video["width"] - 2 * cap["safe_margin"] - 2 * cap["outline_width"]
     height = video["height"] - 2 * cap["safe_margin"]
+    if normalize_channel_name(cap.get("channel_name", "")):
+        height -= channel_metrics(cap, video)[2]
     for size in range(cap["font_size"], 7, -1):
         font = ImageFont.truetype(cap["font_file"], size)
         lines, line = [], []
@@ -96,12 +108,16 @@ def write_ass(plan, cap, video, path):
     and filesystem failures propagate to the media workflow.
     """
     alignment = {"top": 8, "center": 5, "bottom": 2}[cap["position"]]
+    channel = normalize_channel_name(cap.get("channel_name", ""))
     x = video["width"] / 2
     y = {
         "top": cap["safe_margin"],
         "center": video["height"] / 2,
         "bottom": video["height"] - cap["safe_margin"],
     }[cap["position"]]
+    channel_size, channel_gap, channel_space = channel_metrics(cap, video)
+    if channel:
+        y -= {"top": 0, "center": channel_space / 2, "bottom": channel_space}[cap["position"]]
     if any(ch in cap["font_name"] for ch in ",\r\n"):
         raise ValueError("Invalid font name")
     header = f"""[Script Info]
@@ -122,6 +138,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     for caption in plan.captions:
         words = caption.sentence.words
         size, lines = layout(words, cap, video)
+        if channel:
+            block_height = len(lines) * size * 1.5
+            channel_y = (
+                y
+                + {"top": block_height, "center": block_height / 2, "bottom": 0}[cap["position"]]
+                + channel_gap
+            )
+            label = (
+                f"{{\\an8\\pos({x},{channel_y})\\fs{channel_size}\\bord{min(video['width'], video['height']) / 1080 * 0.5}\\q2}}"
+                + escape(channel)
+            )
+            # A single persistent label per sentence stays still during word reveals.
+            events.append(
+                f"Dialogue: 1,{ass_time(words[0].start)},{ass_time(caption.end)},Default,Channel,0,0,0,,{label}"
+            )
         for i, w in enumerate(words):
             end = words[i + 1].start if i + 1 < len(words) else caption.end
             if ass_time(w.start) == ass_time(end):

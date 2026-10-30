@@ -4,7 +4,7 @@ DEFAULTS defines the accepted sections/keys and ROOT anchors the default config
 location. Relative media and font paths resolve beside the chosen YAML file.
 Structural validation permits blank provider settings for dashboard startup;
 separate preflight checks require the selected providers before processing.
-Secrets are read from named environment variables; this module does not load .env.
+Load named credentials from the project's .env, preserving exported variables.
 """
 
 import copy
@@ -16,7 +16,10 @@ from urllib.parse import urlparse
 
 import yaml
 
+from app.environment import load_environment
+
 ROOT = Path(__file__).resolve().parent.parent
+MUSIC_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac", ".opus"}
 DEFAULTS = {
     "baserow": {
         "api_url": "https://api.baserow.io",
@@ -51,11 +54,27 @@ DEFAULTS = {
         "threads": 2,
     },
     "footage": {
+        "mode": "image",
         "minimum_words_for_new_clip": 3,
         "avoid_immediate_repetition": True,
         "random_seed": None,
     },
+    "composition": {
+        "images_directory": "assets/images",
+        "videos_directory": "assets/videos",
+        "music_directory": "assets/music",
+        "overlay_file": "assets/overlays/Authentic vintage film grain overlay nostalgic to any project, creating retro cinematic effects.mp4",
+    },
+    "shake": {
+        "enabled": True,
+        "zoom": 1.03,
+        "amplitude_x": 0.35,
+        "amplitude_y": 0.35,
+        "period_x": 2.4,
+        "period_y": 3.2,
+    },
     "captions": {
+        "channel_name": "",
         "font_name": "Special Elite",
         "font_file": "assets/fonts/SpecialElite-Regular.ttf",
         "font_size": 70,
@@ -73,7 +92,6 @@ DEFAULTS = {
         "temp": "temp",
         "logs": "logs",
         "buffer": "buffer/voiceovers",
-        "image_buffer": "buffer/images",
     },
     "server": {"host": "127.0.0.1", "port": 8000},
 }
@@ -88,7 +106,8 @@ def load_config(path=None):
     Treat an empty YAML document as defaults, reject unknown sections/keys, and
     resolve configured file/directory paths relative to the YAML's directory.
     Deep-copy defaults so repeated loads cannot mutate one another. This reads
-    configuration only; it does not create output directories or contact services.
+    configuration and fills missing credential/server environment variables from
+    the project's .env; it does not create directories or contact services.
 
     Raises:
         ValueError: YAML syntax, schema or setting values are invalid.
@@ -113,13 +132,29 @@ def load_config(path=None):
         config[section].update(values)
     for section, keys in [
         ("captions", ["font_file"]),
-        ("paths", ["output", "temp", "logs", "buffer", "image_buffer"]),
+        (
+            "composition",
+            ["images_directory", "videos_directory", "music_directory", "overlay_file"],
+        ),
+        ("paths", ["output", "temp", "logs", "buffer"]),
     ]:
         for key in keys:
             if not isinstance(config[section][key], str) or not config[section][key].strip():
                 raise ValueError(f"{section}.{key} must be a nonempty path")
             config[section][key] = str((path.parent / config[section][key]).resolve())
     validate_config(config)
+    load_environment(
+        {
+            config["whisper"]["api_key_env"],
+            config["baserow"]["api_key_env"],
+            config["cloudinary"]["api_key_env"],
+            config["cloudinary"]["api_secret_env"],
+            "VIDEO_BUILDER_API_KEY",
+            "VIDEO_BUILDER_HOST",
+            "VIDEO_BUILDER_PORT",
+        },
+        ROOT / ".env",
+    )
     return config
 
 
@@ -135,6 +170,10 @@ def validate_config(c):
     UI can open before setup. Provider preflight checks enforce them at run time.
     Raise ValueError on invalid values; do not mutate settings or perform network I/O.
     """
+    validate_shake(c["shake"])
+    normalize_channel_name(c["captions"]["channel_name"])
+    if c["footage"]["mode"] not in ("image", "video", "hybrid"):
+        raise ValueError("footage.mode must be image, video or hybrid")
     for section, keys in [
         ("video", ["width", "height", "fps", "threads"]),
         ("footage", ["minimum_words_for_new_clip"]),
@@ -280,7 +319,8 @@ def check_transcription_config(c):
         raise ValueError("Set whisper.api_url and whisper.model for your transcription provider")
     if not os.environ.get(c["whisper"]["api_key_env"]):
         raise ValueError(
-            f"Set {c['whisper']['api_key_env']} securely in the environment for transcription"
+            f"Set {c['whisper']['api_key_env']} in the project's .env or export it "
+            "in the environment for transcription, then restart the application"
         )
 
 
@@ -300,10 +340,59 @@ def check_upload_config(c):
 
 
 def check_render_config(c):
-    """Require the configured font file before expensive media work starts.
+    """Require the font, music pool and overlay before expensive media work starts.
 
     This checks file presence, leaving font decoding to Pillow/libass and encoder
     availability to the renderer. Raise ValueError when the file is missing.
     """
+    validate_shake(c["shake"])
+    normalize_channel_name(c["captions"]["channel_name"])
     if not Path(c["captions"]["font_file"]).is_file():
         raise ValueError("Special Elite font is missing; see README font instructions")
+    check_composition_config(c)
+
+
+def normalize_channel_name(value):
+    """Treat blank names as absent and keep channel labels to one short line."""
+    if not isinstance(value, str):
+        raise ValueError("Channel name must be text")
+    value = " ".join(value.split())
+    if len(value) > 80 or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise ValueError("Channel name must be at most 80 characters without control characters")
+    return value
+
+
+def validate_shake(shake):
+    """Bound filter parameters and keep motion inside the overscan area."""
+    if type(shake["enabled"]) is not bool:
+        raise ValueError("shake.enabled must be true or false")
+    for key, low, high in [
+        ("zoom", 1, 1.2),
+        ("amplitude_x", 0, 1),
+        ("amplitude_y", 0, 1),
+        ("period_x", 0.2, 30),
+        ("period_y", 0.2, 30),
+    ]:
+        value = shake[key]
+        if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
+            raise ValueError(f"shake.{key} must be a finite number between {low} and {high}")
+
+
+def music_candidates(c):
+    """Return local background tracks in a stable order, without selecting one."""
+    directory = Path(c["composition"]["music_directory"])
+    candidates = sorted(
+        path
+        for path in directory.glob("*")
+        if path.is_file() and path.suffix.lower() in MUSIC_EXTENSIONS
+    )
+    if not candidates:
+        raise ValueError("Music asset directory is empty; add a background audio track")
+    return candidates
+
+
+def check_composition_config(c):
+    """Check composition asset presence; FFmpeg validates actual media on render."""
+    music_candidates(c)
+    if not Path(c["composition"]["overlay_file"]).is_file():
+        raise ValueError("Film overlay asset is missing; check composition.overlay_file")

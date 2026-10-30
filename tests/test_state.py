@@ -35,7 +35,7 @@ def test_checkpoint_replace_failure_keeps_previous_valid_json(monkeypatch, tmp_p
     from pathlib import Path
 
     workspace = Workspace.for_job(
-        {key: str(tmp_path / key) for key in ("temp", "output", "buffer", "image_buffer")},
+        {key: str(tmp_path / key) for key in ("temp", "output", "buffer")},
         Job(1, "test", "unused", "PROCESSING"),
     )
     workspace.prepare()

@@ -6,23 +6,28 @@
 
 ## File links and buffers
 
-Put a direct HTTP(S) audio URL in each Baserow audio row and set `Status` to `NOT_PROCESSED`. The URL may come from an object store, your own server or any host that serves the actual file. Normal redirects are followed. A file extension is not required; FFprobe verifies that the download contains usable audio.
-
-Browser preview pages, HTML login pages and links that require browser cookies or a private provider SDK are unsupported. Use a direct-download or signed URL with enough time before expiry for the job to finish.
-
-The image table must contain at least one usable link. Supported images are still JPEG, PNG, WebP and BMP files. Animated images are rejected.
-
-At the start of a run, the app reads the image table and logs its total row count and number of distinct usable links. Blank or invalid HTTP(S) links are skipped. Duplicate image URLs count once. After transcription, the planner selects images for the timeline and downloads only those selections. An image reused within one video downloads once; each new job downloads fresh copies. A selected image that cannot download or decode fails the job visibly.
+The default worker reads local `voice-NNNNNN.ext` files from `buffer/voiceovers/`
+and still images directly from `assets/images/`. Use `python -m app.buffer add
+/path/to/audio.wav` to copy a complete voice into the next available number.
+Selection is random during planning; images are retained. An empty voice queue is
+a successful no-op without provider validation.
 
 | Location | Retention |
 | --- | --- |
-| `buffer/voiceovers/` | Original downloaded audio remains after processing |
-| `buffer/images/row-*/` | Selected images remain after processing |
-| `output/` | Complete MP4 files remain, including after an upload failure |
-| `temp/row-*/` | Successful jobs remove their work directory; failed jobs keep diagnostics |
-| `logs/` | Rotating `video_builder.log`, approximately 5 MB per file with 3 backups |
+| `buffer/voiceovers/voice-*.ext` | Removed only after a successful render and saved receipt |
+| `buffer/voiceovers/.queue/` | Retain sequence, source mappings and completion/delivery receipts |
+| `assets/images/` | Reusable local images |
+| `assets/videos/` | Reusable local video clips |
+| `output/voice-*.mp4` | Finished reels; retained independently of upload success |
+| `temp/voice-*/` | Successful work is cleaned; failed work remains for diagnosis |
+| `logs/` | Rotating logs |
 
-Downloads are finalized only after completion. Incomplete downloads and partial MP4 files are removed. You can clear old buffers when no run needs them. Only the finished MP4 is uploaded to Cloudinary; source audio goes to the transcription API, and source images stay local.
+Optional `python -m app.automations --watch` imports direct HTTP(S) audio links
+from Baserow only when the local queue is empty. It does not download images.
+Provider downloads reject incomplete files, login pages and invalid media. The dev
+tool keeps all test uploads, rendered videos and diagnostics under `temp/ui-test/`.
+Nested legacy buffer directories are not added to the numbered queue.
+See [the local quick start](../README.md#local-quick-start).
 
 ## Transcription provider
 
@@ -42,19 +47,21 @@ The provider must accept Bearer-authenticated multipart requests with:
 
 For speech, the response must include `text`, `words` with word/start/end fields, and `segments` with text/start/end fields. The app validates timestamp order and alignment, and restores punctuation from the transcript text. Missing or inconsistent timestamps fail the job rather than being fabricated.
 
+Some responses include standalone punctuation (such as `«` or `»,`) in the words array. These entries are ignored as timing sources; their punctuation is preserved from the full transcript text. Spoken words still require valid timestamps and exact text alignment.
+
 Whisper may estimate a word or segment end slightly beyond the recording. Ends up to 0.5 seconds beyond the actual audio duration are capped at that duration, provided speech starts inside the recording. Larger overruns, invalid timestamps and unordered words still fail validation. Word order is checked before clipping.
 
 The temporary FLAC upload is limited to 24 MB and removed on completion, failure or cancellation, including cancellation during audio preparation. The original buffered audio supplies the final video's audio track. Your provider may impose a smaller limit and may charge for retries.
 
 ## Configuration
 
-Edit existing values in [`config.yaml`](../config.yaml). Restart the dashboard or API to reload YAML changes. Rebuild with `docker compose build dashboard` after code or dependency changes. Baserow image links are read afresh at the start of each run.
+Edit existing values in [`config.yaml`](../config.yaml). Restart the dashboard or API to reload YAML changes. Rebuild with `docker compose build dashboard` after code or dependency changes. The local image pool is snapshotted at the start of each nonempty run. Baserow/Cloudinary settings apply only to the optional automation service.
 
 | Setting | Purpose |
 | --- | --- |
 | `baserow.api_url` | Baserow server root, such as `https://api.baserow.io`; self-hosted HTTPS servers are supported |
 | `baserow.table_id` | Audio-job table ID, not a database or view ID |
-| `baserow.images_table_id` | A distinct image table ID |
+| `baserow.images_table_id` | Legacy remote-first integrations only; unused by the worker and voice import |
 | `downloads.timeout_seconds` | Per-request download timeout, default 60 seconds |
 | `downloads.max_file_mb` | Maximum source download size, default 256 MB |
 | `cloudinary.cloud_name` | Cloudinary account cloud name |
@@ -68,18 +75,35 @@ Edit existing values in [`config.yaml`](../config.yaml). Restart the dashboard o
 | `footage.minimum_words_for_new_clip` | Minimum sentence length for an image change; default 3 |
 | `footage.avoid_immediate_repetition` | Avoid choosing the same image consecutively when possible |
 | `footage.random_seed` | Integer for reproducible plans, or `null` for randomness |
+| `footage.mode` | `image` (default), `video`, or `hybrid` (video first) |
+| `composition.music_directory` | Local background music pool; one random track per reel |
+| `composition.overlay_file` | Local film-grain video blended using difference |
 | `captions.position` | `top`, `center` or `bottom` |
+| `captions.channel_name` | Optional channel label below captions; blank omits it; maximum 80 characters |
+| `shake.enabled` | Enable still-image shake; false also disables its extra zoom |
+| `shake.zoom` | Overscan factor from 1 to 1.2; default 1.03 |
+| `shake.amplitude_x` / `shake.amplitude_y` | Fraction of available horizontal/vertical crop travel, 0–1; default 0.35 |
+| `shake.period_x` / `shake.period_y` | Seconds per cycle, 0.2–30; smaller is faster; defaults 2.4 / 3.2 |
 | `captions.font_size` / `captions.safe_margin` | Caption size and distance from video edges |
 | `captions.max_words_per_line` | Caption line wrapping |
 | `captions.color` / `captions.outline_color` / `captions.outline_width` | Caption colors and outline |
-| `paths.buffer` / `paths.image_buffer` | Audio and image buffer directories |
+| `paths.buffer` | Numbered audio queue directory |
+| `composition.images_directory` | Shared still-image pool, default `assets/images`; retained across reels |
+| `composition.videos_directory` | Shared video pool, default `assets/videos`; retained across reels |
 | `paths.output` / `paths.temp` / `paths.logs` | Output, working files and log directories |
 
-Paths resolve relative to `config.yaml`. Compose persists the default buffer/output/temp/logs locations and mounts `config.yaml` read-only. If you move paths outside those locations, update the Compose mounts too.
+Paths resolve relative to `config.yaml`. Compose persists the default buffer/output/temp/logs locations and mounts `config.yaml`, `assets/images` and `assets/videos` read-only. If you move paths outside those locations, update the Compose mounts too.
 
 ### Credentials and uploads
 
-Docker Compose reads `.env` and passes credentials into the containers. The Python application itself does not load `.env`. Native Python and shell clients need exported environment variables.
+Docker Compose reads `.env` and passes credentials into the containers. Native
+Python launchers also load configured provider credentials, `VIDEO_BUILDER_API_KEY`
+and optional `VIDEO_BUILDER_HOST`/`VIDEO_BUILDER_PORT` from the project's `.env`.
+Exported variables take priority, including explicit blank values. The file is
+resolved beside the application code, independently of the working directory or
+custom YAML location. Plain or quoted values, `export KEY=value` and comments are
+supported; values are never executed or expanded. Restart after changing `.env`.
+Shell clients such as `curl` still need exported variables for shell substitution.
 
 Cloudinary's API secret signs requests locally and is never sent as a raw upload field. Supply the actual secret to the process; a network-proxy placeholder cannot perform local signing. Default delivery URLs are public HTTPS links. Cloudinary account storage, bandwidth and upload-size limits apply.
 
@@ -91,11 +115,49 @@ Punctuation groups timestamped words across transcription segments. A long punct
 
 The first image begins at zero. Sentences meeting the word threshold start a new image selection; shorter sentences retain the current image. Images are scaled and center-cropped while preserving aspect ratio. Shared frame boundaries avoid gaps, and the output duration matches the voiceover within one frame.
 
+Still images use a small overscan and gentle, moderately paced shaking without exposed
+borders. Source images are reduced to 80% brightness before overlay composition.
+The renderer selects one music track for the reel, applies −12.0 dB to
+music and +3.4 dB to voice, and mixes without automatic normalization. Mono voices
+are centered in stereo without implicit pan attenuation. The film overlay loops
+with difference blending at 70% opacity before captions; its soundtrack is
+excluded. Short
+music/overlay assets loop, and composition stops at the voice timeline. Asset
+choices and settings are recorded in retained `composition.json` diagnostics.
+
 Caption layout reserves space for the entire sentence before revealing words at their timestamps. Words do not shift as new words appear. The completed sentence remains through silence until the next sentence begins; the final caption persists until the audio ends. Before the first word and for silence-only audio, captions can be absent.
 
 Progressive word reveal, word timestamps and silence persistence are required by this version. Output uses H.264, AAC, yuv420p and fast-start metadata. AAC preserves timing and meaningful silence but does not copy the original audio bytes unchanged.
 
+## Console input source
+
+Run `python main.py` and choose **Local buffer** or **Baserow** before starting.
+Local mode processes only numbered voices already on disk. If none are waiting,
+the console rejects the request and asks you to add local voices or import them
+from Baserow. It never contacts Baserow automatically to resolve an empty selection.
+
+Baserow mode imports `NOT_PROCESSED` rows into an empty local voice buffer, then
+runs the local worker. Configure the source table and database token first;
+Cloudinary credentials are not required for this step. A populated local queue
+must be processed first. No eligible source rows, missing configuration and import
+errors appear in console status. Successfully imported files remain available if
+a later import fails; switch to local mode to process them after fixing the cause.
+
+**Refresh Buffer** refreshes disk counts regardless of the selected source.
+**Stop Processing** also stops an active import at its cancellation checkpoints.
+The source selector is disabled until import/processing finishes. Completion
+publication and sheet updates remain in the separate automation listener.
+
 ## HTTP API
+
+`GET /run?style=story&section=/server/path/to/section` selects the story workflow.
+The section directory must contain `script.txt`, exactly one `audio.*` file and
+numbered images under `frames/`. The default style is `poetry`. Story requests
+return HTTP 202 when scheduled; use `/status` to inspect success or failure and
+the `output` / `work` paths. Input errors and uncertain alignment stop the run
+without removing source files. `lines.json`, `transcript.json`, `alignment.json`
+and `plan.json` remain in the unique work directory for review. Transcription
+credentials are required; Baserow, Cloudinary, music and overlays are not.
 
 Set `VIDEO_BUILDER_API_KEY` in `.env`, then start the API:
 
@@ -108,6 +170,7 @@ Both endpoints require an `X-API-Key` header.
 | Endpoint | Behavior |
 | --- | --- |
 | `GET /run` | Starts pending jobs and returns HTTP 202; returns `already_running` with HTTP 200 if a run is active |
+| `GET /run?mode=image\|video\|hybrid` | Overrides the footage mode for this run; invalid modes return HTTP 422 |
 | `GET /status` | Returns current status, job counts, stage and progress |
 
 Export the same key in your client shell before running these commands. Compose reading `.env` does not export it for curl.
@@ -115,6 +178,8 @@ Export the same key in your client shell before running these commands. Compose 
 ```sh
 curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" http://127.0.0.1:8000/status
 curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" http://127.0.0.1:8000/run
+curl -H "X-API-Key: $VIDEO_BUILDER_API_KEY" 'http://127.0.0.1:8000/run?mode=hybrid'
+curl -G -H "X-API-Key: $VIDEO_BUILDER_API_KEY" --data-urlencode 'channel_name=My Channel' http://127.0.0.1:8000/run
 ```
 
 Never put the key in a URL. Docker publishes the API only on the host's loopback interface. Change its host port with `VIDEO_BUILDER_HTTP_PORT`. Remote access requires your own HTTPS reverse proxy forwarding the authentication header; disable caching and prefetching for `/run`.
@@ -126,55 +191,92 @@ docker compose stop api
 
 There is no scheduler or automatic processing at startup.
 
+The console has a separate footage-mode selector, independent of the local/Baserow
+voice source. The CLI supports `python -m app.buffer run --mode video` (also with
+`--watch`). Hybrid requires both shared asset pools and starts with a video;
+subsequent selections use the combined pool. Video mode does not require images.
+Missing/invalid required assets fail before transcription and retain queued voices.
+Use at least two clips if video mode should change files at each eligible cut.
+
+`channel_name` is a per-run override, independent of footage mode. Omit it to use
+the configured default; pass an empty string to suppress that default. Invalid
+names return HTTP 422 before starting a run. The console and dev tool also offer
+an optional channel-name field. The CLI accepts `--channel-name "My Channel"`.
+The label renders only while a caption is present, below its full multiline
+layout, at 8 pt (96 DPI, 10.67 pixels on a 1080-pixel short edge), scaled with the
+short edge. Caption layout reserves room for it at top, center or bottom positions.
+
+Pass `aspect_ratio=9:16`, `16:9`, `1:1`, or `4:5` to `/run` for a per-run format
+override in either workflow. Omission uses configured width/height. The console
+and devtool expose the same choices; invalid API formats return HTTP 422.
+
+Use the dev-tool shake preview and **Apply to project** to tune movement and save
+the `shake` section directly to `config.yaml`. Restart running console/API processes
+to reload saved settings. Zero movement amplitudes hold the image steady
+at the chosen zoom; `enabled: false` removes both motion and overscan. At zoom 1
+there is no spare crop area, so movement is zero. Video clips retain natural motion.
+
 ## Running safely
 
-The dashboard and API use the same processing engine and a lock keyed by Baserow server and audio table ID. Run them from the same Compose project so they share the `processing-locks` volume. Avoid simultaneous processing from another Compose project, native process or computer against the same table. The lock is local, not distributed.
+The dashboard, API and `python -m app.buffer run` share a lock keyed by the resolved
+voice buffer path. Compose services share the `processing-locks` volume. Use a
+single mount layout and lock directory for all processes touching the same queue;
+do not mix native and container workers against it. This is not a distributed lock
+across computers. Do not remove the lock volume while processing.
 
-Stop the instance that owns the run to cancel it. A dashboard observing another process cannot stop that process. Do not remove the lock volume while processing.
+`python -m app.buffer run --watch` checks for new local voices every five seconds.
+The automation listener is a separate optional process and never starts rendering.
+Its own lock prevents two polling listeners from publishing the same event together.
 
-**Stop Processing** prevents new jobs and cancels the current job at a safe checkpoint. FFmpeg stops promptly; HTTP operations stop between requests or chunks, or after their timeout. A final confirmed Cloudinary upload is still recorded in Baserow if Stop arrives with the response. Compose allows 180 seconds for shutdown; increase this if you increase request timeouts.
-
-Baserow updates use the stable internal row ID, not the editable `ID` label. Avoid changing or deleting pending rows during a run because the app works from a snapshot.
-
-| Status | Meaning |
-| --- | --- |
-| `NOT_PROCESSED` | Eligible for the next run |
-| `PROCESSING` | Job has started; a stale row needs inspection |
-| `DONE` | Cloudinary upload was confirmed and the row was updated |
-| `FAILED` | Processing failed or was cancelled; review `Error` before retrying |
-
-Legacy `COMPLETED` rows are skipped as already finished. Blank or unrecognized statuses are skipped with a warning. A job failure normally leaves an error on that row and allows the next pending job to run.
+Stop the process that owns a run to cancel it. Failed or cancelled renders keep
+the voice. The dashboard/API can be started without any provider credentials. A
+nonempty render requires the configured transcription API key and usable local images.
+A complete render is recorded and consumed even if Stop arrives at finalization.
 
 ## Recovery
 
-Failed jobs are not retried automatically. Fix the cause, inspect any saved upload information, then set `Status` to `NOT_PROCESSED` and start again. Each retry makes a new render and a new upload ID.
+Each successful local render saves a completion event under
+`buffer/voiceovers/.queue/completed/voice-NNNNNN.json`, then removes its input and
+marks the event `consumed`. An interruption at the removal boundary is recovered
+from the `rendered` event on the next queue read, without rendering again. A
+manual input deletion alone never signals successful completion. Preserve .queue
+and completed MP4s; never reuse consumed IDs.
 
-A crash may leave a row at `PROCESSING`. The next run warns and skips it. Confirm no process is still working before resetting it.
+Rendering failures leave the voice and temporary diagnostics. Fix the cause and
+start a new run; watch mode retries automatically on subsequent polls. If output
+was finalized but the completion event could not be saved, the source is retained
+and the next attempt may rerender. Atomic replacement avoids partial JSON reads;
+these checkpoints are not a power-loss or distributed transaction.
 
-When rendering succeeds but uploading or updating Baserow fails, the complete local MP4 is retained. Check the job directory under `temp/`:
+Optional provider delivery has separate receipts under `.queue/delivery/`:
 
-| Checkpoint | Contents |
+| State | Meaning and recovery |
 | --- | --- |
-| `rendered.json` | Completed local output path, audio path and row ID |
-| `upload.json` | Intended Cloudinary public ID, written before uploading |
-| `uploaded.json` | Confirmed upload URL, public ID, byte count and output path |
-| `failure.json` | Error, local paths and any known uploaded URL |
+| `uploading` | Intended public ID saved before upload; outcome may be ambiguous. Reconcile Cloudinary before retrying. |
+| `uploaded` | Confirmed upload saved; retry the listener to update the sheet without reuploading. |
+| `done` | Original Baserow row acknowledged the URL and DONE; skip on later polls. |
 
-If `uploaded.json` exists, copy the URL into `Output URL`, the output path into `Output File`, and set `Status` to `DONE` manually after checking the file.
+For an `uploading` receipt, check its public ID and actual local/remote video. If
+the complete upload exists, verify its HTTPS URL, public ID and byte count before
+recording `uploaded` with those fields in an `uploaded` object. If it is confirmed
+absent, remove only that delivery receipt to permit a fresh upload. Never delete
+the completion event or restore/requeue a consumed source to retry publication.
+Do reconciliation while the automation listener is stopped.
 
-If the final upload request timed out, inspect Cloudinary for the public ID in `upload.json` before retrying. The remote video may already exist. Cloudinary uploads and Baserow updates are separate operations, so a lost response does not prove the upload failed.
-
-Checkpoint JSON files are replaced atomically so readers do not observe partially written documents. A disk or permission failure can still prevent a checkpoint from being saved. The runner attempts diagnostics and remote failure updates independently; check the row error and logs if a checkpoint is absent. A complete MP4 is retained after rendering even if a later checkpoint fails. If `uploaded.json` could not be saved, a known uploaded URL may still appear in `failure.json` or the failed row.
-
-After Baserow acknowledges `DONE`, failure to remove the temporary work directory is logged without changing the job back to `FAILED`. Shared-status publication failures are also logged without changing the job outcome.
+The listener uses the imported internal row ID, not its editable `ID` label or
+local sequence number. It writes `Output URL` and `DONE` together only after
+upload confirmation. Provider failure does not reverse local completion. A lost
+sheet acknowledgement can repeat the same update safely. Unmapped local files
+have no provider side effects. A changed Baserow server/table is rejected for
+older mappings; restore the original configuration before delivering them.
 
 ## Troubleshooting
 
 | Symptom | What to check |
 | --- | --- |
 | Baserow reports an error | Numeric table IDs, exact field names, token permissions and server URL |
-| No jobs run | Audio rows must have the exact status `NOT_PROCESSED` |
-| No usable images | Separate image table ID, `Image URL` field and at least one direct HTTP(S) image link |
+| No jobs run | Check numbered local voices; optional refill imports rows with `NOT_PROCESSED` |
+| No usable images | Put still image files in composition.images_directory (default assets/images); voice remains queued on failure |
 | Audio or image download fails | Link expiry, login/preview pages, file size and supported media format |
 | Transcription fails | Exact endpoint and model, API key, account access and timestamp support |
 | Cloudinary upload fails | Cloud name, API key/secret, account limits and saved upload checkpoints |
@@ -196,7 +298,7 @@ The bundle is used only during dependency installation and is not copied into th
 
 Docker is the preferred runtime and uses Python 3.13. Native development supports Python 3.13 or 3.14 with FFmpeg/FFprobe, libass/H.264 support and a virtual environment.
 
-Install `requirements-dev.txt` for the pinned runtime and development tools, or `requirements.lock` for runtime dependencies alone. Export the required environment variables, then run `python main.py` or `python api.py` from the environment. See [development checks](ARCHITECTURE.md#development-checks) for lint, formatting, type checks and tests. The application does not load `.env` automatically. Keep native processing separate from Docker processing against the same Baserow table.
+Install `requirements-dev.txt` for the pinned runtime and development tools, or `requirements.lock` for runtime dependencies alone. Export the required environment variables, then run `python main.py` or `python api.py` from the environment. See [development checks](ARCHITECTURE.md#development-checks) for lint, formatting, type checks and tests. The application does not load `.env` automatically. Keep native and Docker workers separate when they resolve the same queue through different mount paths.
 
 ## Validation scope
 

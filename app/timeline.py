@@ -1,8 +1,8 @@
 """Plan footage cuts and persistent captions using a shared audio clock.
 
 This module performs no I/O. Sentence starts above a word threshold determine
-image changes; individual word starts determine caption reveals. Separating
-those rules keeps short sentences on the current image and avoids image changes
+footage changes; individual word starts determine caption reveals. Separating
+those rules keeps short sentences on the current footage and avoids changes
 at every caption update. A supplied random seed makes source selection repeatable.
 """
 
@@ -52,7 +52,7 @@ class Source:
 
     Attributes:
         path: Remote URL before resolution, or local renderable path afterward.
-        kind: image or video; the default application catalog supplies images.
+        kind: image or video; selected by the configured footage mode.
         duration: Positive video duration in seconds; unused and normally zero
             for still images, which can fill any planned interval.
     """
@@ -102,6 +102,13 @@ class Caption:
 
 
 @dataclass(frozen=True)
+class Transition:
+    kind: str
+    start: float
+    end: float
+
+
+@dataclass(frozen=True)
 class Plan:
     """Hold the complete voiceover duration, visual intervals and caption units.
 
@@ -112,6 +119,7 @@ class Plan:
     duration: float
     footage: tuple[Interval, ...]
     captions: tuple[Caption, ...]
+    transitions: tuple[Transition, ...] = ()
 
     def to_dict(self):
         """Recursively convert timeline dataclasses to checkpoint-serializable values."""
@@ -170,7 +178,7 @@ def sentences_from_words(words, duration, fallback_words=20):
     return result
 
 
-def build_plan(sentences, sources, duration, threshold=3, seed=None, avoid_repeat=True):
+def build_plan(sentences, sources, duration, threshold=3, seed=None, avoid_repeat=True, mode=None):
     """Choose visual intervals and caption lifetimes covering the original audio.
 
     Args:
@@ -180,6 +188,8 @@ def build_plan(sentences, sources, duration, threshold=3, seed=None, avoid_repea
         threshold: Minimum sentence word count that starts a new visual selection.
         seed: Optional local random-generator seed for reproducible choices.
         avoid_repeat: Exclude the previous source when another candidate exists.
+        mode: image/video filters candidates; hybrid requires both and opens with video.
+            None keeps the supplied catalog unchanged for custom integrations.
 
     Start footage at zero, cut only at qualifying sentence starts, and keep short
     sentences on the current source. Video offsets are randomly chosen within
@@ -189,6 +199,13 @@ def build_plan(sentences, sources, duration, threshold=3, seed=None, avoid_repea
     """
     words = [w for s in sentences for w in s.words]
     validate_words(words, duration)
+    if mode is not None:
+        if mode not in ("image", "video", "hybrid"):
+            raise ValueError("Footage mode must be image, video or hybrid")
+        required = {"image", "video"} if mode == "hybrid" else {mode}
+        sources = [s for s in sources if s.kind in required]
+        if not required.issubset({s.kind for s in sources}):
+            raise ValueError(f"{mode} mode requires {' and '.join(sorted(required))} sources")
     if not sources:
         raise ValueError("No valid footage available")
     for source in sources:
@@ -204,6 +221,8 @@ def build_plan(sentences, sources, duration, threshold=3, seed=None, avoid_repea
     rng, intervals, previous = random.Random(seed), [], None
     for start, end in zip(starts, starts[1:] + [duration], strict=True):
         choices = [x for x in sources if not avoid_repeat or x != previous] or list(sources)
+        if mode == "hybrid" and not intervals:
+            choices = [x for x in choices if x.kind == "video"]
         source = rng.choice(choices)
         offset = (
             rng.uniform(0, max(0, source.duration - (end - start))) if source.kind == "video" else 0
@@ -252,7 +271,14 @@ def validate_plan(plan, words, threshold=3):
     expected_cuts = {
         c.sentence.start
         for c in plan.captions
-        if len(c.sentence.words) >= threshold and 0 < c.sentence.start < plan.duration
+        if threshold is not None
+        and len(c.sentence.words) >= threshold
+        and 0 < c.sentence.start < plan.duration
     }
-    if {i.start for i in plan.footage[1:]} != expected_cuts:
+    if threshold is not None and {i.start for i in plan.footage[1:]} != expected_cuts:
         raise ValueError("Footage cuts do not match qualifying sentences")
+    for transition in plan.transitions:
+        if transition.kind not in {"dissolve", "fade_in", "fade_out"} or not (
+            0 <= transition.start < transition.end <= plan.duration
+        ):
+            raise ValueError("Invalid timeline transition")

@@ -7,13 +7,20 @@ not automatically contact providers or start jobs.
 """
 
 import logging
+from threading import Event
 
 from textual.app import App, ComposeResult
 from textual.containers import Grid, Horizontal
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, ProgressBar, RichLog, Static
+from textual.widgets import Button, Footer, Header, Input, ProgressBar, RichLog, Select, Static
+
+from app.video_format import VIDEO_FORMATS
 
 log = logging.getLogger("video_builder")
+EMPTY_BUFFER_MESSAGE = (
+    "The local voice buffer is empty. Add voice files to the buffer or choose "
+    "Baserow to import them."
+)
 
 
 class ConfirmExit(ModalScreen):
@@ -42,8 +49,11 @@ class Dashboard(App):
     TITLE = "AI VIDEO BUILDER"
     CSS = """
     Screen { layout: vertical; }
-    #status { height: 3; padding: 1; }
-    #stats { height: 2; padding: 0 1; }
+    #format-controls { height: 3; }
+    #format-controls Select { width: 1fr; }
+    #source, #mode, #channel-name { height: 3; }
+    #status { height: 1; padding: 0 1; }
+    #stats { height: 1; padding: 0 1; }
     #job { height: 5; padding: 0 1; }
     #progress { height: 2; padding: 0 1; }
     #logs { height: 1fr; border: solid $primary; }
@@ -74,6 +84,44 @@ class Dashboard(App):
         appear literally instead of being interpreted as terminal formatting.
         """
         yield Header()
+        with Horizontal(id="format-controls"):
+            yield Select(
+                [("Poetry — random footage", "poetry"), ("Story — numbered frames", "story")],
+                value="poetry",
+                allow_blank=False,
+                id="style",
+            )
+            yield Select(
+                [("Size — project default", "default")]
+                + [(f"{ratio} · {w} × {h}", ratio) for ratio, (w, h) in VIDEO_FORMATS.items()],
+                value="default",
+                allow_blank=False,
+                id="aspect-ratio",
+            )
+        yield Input(
+            placeholder="Story section directory (script.txt, audio.*, frames/)", id="section"
+        )
+        yield Select(
+            [
+                ("Local buffer — process buffered voices", "local"),
+                ("Baserow — import voices, then process", "baserow"),
+            ],
+            value="local",
+            allow_blank=False,
+            id="source",
+        )
+        yield Select(
+            [("Images", "image"), ("Videos", "video"), ("Hybrid — video first", "hybrid")],
+            value=self.processor.config["footage"]["mode"],
+            allow_blank=False,
+            id="mode",
+        )
+        yield Input(
+            value=self.processor.config["captions"]["channel_name"],
+            placeholder="Channel name (optional, 8 pt below captions)",
+            max_length=80,
+            id="channel-name",
+        )
         yield Static("IDLE", id="status")
         yield Static("", id="stats")
         yield Static("", id="job", markup=False)
@@ -82,7 +130,7 @@ class Dashboard(App):
         with Grid(id="actions"):
             yield Button("Start Processing", id="start", variant="success")
             yield Button("Stop Processing", id="stop", variant="warning")
-            yield Button("Refresh Jobs", id="refresh")
+            yield Button("Refresh Buffer", id="refresh")
             yield Button("View Logs", id="view")
             yield Button("Exit", id="exit")
         yield Footer()
@@ -91,7 +139,8 @@ class Dashboard(App):
         """Start 200 ms display polling and show the initial idle snapshot."""
         self.set_interval(0.2, self.refresh_display)
         log.info(
-            "Dashboard ready. Configure Baserow settings and add footage, then Start Processing."
+            "Choose Local buffer to process existing voices, or Baserow to import "
+            "voices into an empty buffer before processing."
         )
         self.refresh_display()
 
@@ -118,6 +167,17 @@ class Dashboard(App):
         value = state.get("render_progress")
         bar.update(total=None if active and value is None else 100, progress=value or 0)
         self.query_one("#start", Button).disabled = active or self.exiting
+        self.query_one("#source", Select).disabled = active or self.exiting
+        self.query_one("#style", Select).disabled = active or self.exiting
+        self.query_one("#aspect-ratio", Select).disabled = active or self.exiting
+        self.query_one("#section", Input).disabled = active or self.exiting
+        story = self.query_one("#style", Select).value == "story"
+        self.query_one("#section", Input).display = story
+        self.query_one("#source", Select).display = not story
+        self.query_one("#mode", Select).display = not story
+        self.query_one("#channel-name", Input).display = not story
+        self.query_one("#mode", Select).disabled = active or self.exiting
+        self.query_one("#channel-name", Input).disabled = active or self.exiting
         self.query_one("#stop", Button).disabled = not active or state.get(
             "external_process", False
         )
@@ -136,8 +196,25 @@ class Dashboard(App):
         """
         action = event.button.id
         if action == "start":
-            if not self.processor.start():
-                log.warning("Processing is already active in this or another process")
+            source = self.query_one("#source", Select).value
+            story = self.query_one("#style", Select).value == "story"
+            try:
+                started = self.processor.start(
+                    prepare=self.prepare_baserow if source == "baserow" and not story else None,
+                    style="story" if story else "poetry",
+                    section=self.query_one("#section", Input).value if story else None,
+                    aspect_ratio=None
+                    if self.query_one("#aspect-ratio", Select).value == "default"
+                    else self.query_one("#aspect-ratio", Select).value,
+                    empty_message=EMPTY_BUFFER_MESSAGE,
+                    mode=self.query_one("#mode", Select).value,
+                    channel_name=self.query_one("#channel-name", Input).value,
+                )
+                if not started:
+                    log.warning("Processing is already active in this or another process")
+            except Exception:
+                log.exception("Could not start processing")
+            self.refresh_display()
         elif action == "stop":
             self.processor.stop()
         elif action == "refresh":
@@ -151,6 +228,14 @@ class Dashboard(App):
         elif action == "exit":
             self.action_request_exit()
 
+    def prepare_baserow(self, stop: Event) -> None:
+        """Load the optional importer only after the user selects Baserow."""
+        from app.automations import BufferAutomations
+
+        self.processor.update(stage="Importing voices from Baserow")
+        count = BufferAutomations(self.processor.config, stop).import_for_processing()
+        log.info("Imported %d voices from Baserow; processing the local buffer", count)
+
     def refresh_jobs(self):
         """Read job counts in the background and log any repository failure.
 
@@ -161,7 +246,7 @@ class Dashboard(App):
             self.processor.refresh()
             log.info("Job counts refreshed")
         except Exception:
-            log.exception("Cannot refresh Baserow")
+            log.exception("Cannot refresh the voice buffer")
 
     def action_request_exit(self):
         """Open confirmation for active local work, or exit immediately when idle."""

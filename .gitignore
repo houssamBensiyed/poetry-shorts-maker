@@ -17,5 +17,8 @@ logs/*
 buffer/voiceovers/*
 !buffer/voiceovers/.gitkeep
 
-buffer/images/*
-!buffer/images/.gitkeep
+assets/images/*
+!assets/images/.gitkeep
+
+assets/videos/*
+!assets/videos/.gitkeep
