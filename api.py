@@ -37,7 +37,9 @@ def create_app(config=None, processor=None):
     config = config or load_config()
     key = os.environ.get("VIDEO_BUILDER_API_KEY", "")
     if not key:
-        raise ValueError("Set VIDEO_BUILDER_API_KEY in your environment before starting the API")
+        raise ValueError(
+            "Set VIDEO_BUILDER_API_KEY in the project's .env or export it before starting the API"
+        )
     processor = processor or Processor(config)
 
     @asynccontextmanager

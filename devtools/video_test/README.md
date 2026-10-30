@@ -77,7 +77,8 @@ The downloadable run report records the chosen assets and composition settings.
 Every run uses the project's `Transcriber` and the `whisper` settings in
 `config.yaml`. Set the API endpoint and model there, and put the configured API
 key (normally `WHISPER_API_KEY`) in the project's `.env` file or export it in your
-shell. The launcher reads only that key from `.env`; exported values take priority.
+shell. Shared configuration loads provider and API credentials from the project's
+`.env`; exported values take priority, including explicit blank values.
 Plain and quoted values are supported, without shell commands or variable expansion.
 Restart the server after changing credentials or configuration. The UI shows missing
 settings and prevents a run until the API is configured.

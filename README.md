@@ -54,12 +54,15 @@ python3.13 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 ```
 
-Set `WHISPER_API_KEY` securely in your shell. The default configuration uses
+Set `WHISPER_API_KEY` in the project's `.env` file (copy `.env.example` first),
+or export it securely in your shell. The default configuration uses
 Groq's `whisper-large-v3` transcription API for word and segment timestamps.
 Both builders need the configured transcription service for a full render;
-no Baserow or Cloudinary credentials are required. The native console, worker
-and API read exported environment variables. The devtools launcher can also
-read the configured Whisper key from the project's `.env` file.
+no Baserow or Cloudinary credentials are required. The console, API, worker,
+automations and devtools load credentials from the project's `.env`.
+Exported environment variables take priority, including explicit
+blank values. Restart the application after changing credentials. `.env` is read
+from the project directory regardless of your working directory or YAML location.
 
 Continue with [Poetry](#poetry-workflow-v1), [Story](#story-workflow-v2), or
 [devtools](#devtools-preview-and-shake-editor) to build your first video.
@@ -376,7 +379,7 @@ configuration is rejected for older events, protecting against the wrong sheet.
 ## Docker and API
 
 The image includes Python 3.13, dependencies, FFmpeg and the bundled assets. Compose passes
-values from `.env`; the native application does not. On Linux set `LOCAL_UID` and
+values from `.env`; native launchers also load the project's `.env`. On Linux set `LOCAL_UID` and
 `LOCAL_GID` to your user and group IDs before starting containers.
 
 ```sh

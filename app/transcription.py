@@ -161,7 +161,8 @@ class Transcriber:
         key = os.environ.get(self.config["api_key_env"], "")
         if not key:
             raise ValueError(
-                f"Set {self.config['api_key_env']} securely in the environment for transcription"
+                f"Set {self.config['api_key_env']} in the project's .env or export it "
+                "in the environment for transcription, then restart the application"
             )
         # Direct downloads have no reliable extension. A lossless ASR copy also
         # avoids unsupported input containers; the original remains the render audio.

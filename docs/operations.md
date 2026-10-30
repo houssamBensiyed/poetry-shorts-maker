@@ -94,7 +94,14 @@ Paths resolve relative to `config.yaml`. Compose persists the default buffer/out
 
 ### Credentials and uploads
 
-Docker Compose reads `.env` and passes credentials into the containers. The Python application itself does not load `.env`. Native Python and shell clients need exported environment variables.
+Docker Compose reads `.env` and passes credentials into the containers. Native
+Python launchers also load configured provider credentials, `VIDEO_BUILDER_API_KEY`
+and optional `VIDEO_BUILDER_HOST`/`VIDEO_BUILDER_PORT` from the project's `.env`.
+Exported variables take priority, including explicit blank values. The file is
+resolved beside the application code, independently of the working directory or
+custom YAML location. Plain or quoted values, `export KEY=value` and comments are
+supported; values are never executed or expanded. Restart after changing `.env`.
+Shell clients such as `curl` still need exported variables for shell substitution.
 
 Cloudinary's API secret signs requests locally and is never sent as a raw upload field. Supply the actual secret to the process; a network-proxy placeholder cannot perform local signing. Default delivery URLs are public HTTPS links. Cloudinary account storage, bandwidth and upload-size limits apply.
 

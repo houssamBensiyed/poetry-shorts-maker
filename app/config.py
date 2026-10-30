@@ -4,7 +4,7 @@ DEFAULTS defines the accepted sections/keys and ROOT anchors the default config
 location. Relative media and font paths resolve beside the chosen YAML file.
 Structural validation permits blank provider settings for dashboard startup;
 separate preflight checks require the selected providers before processing.
-Secrets are read from named environment variables; this module does not load .env.
+Load named credentials from the project's .env, preserving exported variables.
 """
 
 import copy
@@ -15,6 +15,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import yaml
+
+from app.environment import load_environment
 
 ROOT = Path(__file__).resolve().parent.parent
 MUSIC_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac", ".opus"}
@@ -104,7 +106,8 @@ def load_config(path=None):
     Treat an empty YAML document as defaults, reject unknown sections/keys, and
     resolve configured file/directory paths relative to the YAML's directory.
     Deep-copy defaults so repeated loads cannot mutate one another. This reads
-    configuration only; it does not create output directories or contact services.
+    configuration and fills missing credential/server environment variables from
+    the project's .env; it does not create directories or contact services.
 
     Raises:
         ValueError: YAML syntax, schema or setting values are invalid.
@@ -140,6 +143,18 @@ def load_config(path=None):
                 raise ValueError(f"{section}.{key} must be a nonempty path")
             config[section][key] = str((path.parent / config[section][key]).resolve())
     validate_config(config)
+    load_environment(
+        {
+            config["whisper"]["api_key_env"],
+            config["baserow"]["api_key_env"],
+            config["cloudinary"]["api_key_env"],
+            config["cloudinary"]["api_secret_env"],
+            "VIDEO_BUILDER_API_KEY",
+            "VIDEO_BUILDER_HOST",
+            "VIDEO_BUILDER_PORT",
+        },
+        ROOT / ".env",
+    )
     return config
 
 
@@ -304,7 +319,8 @@ def check_transcription_config(c):
         raise ValueError("Set whisper.api_url and whisper.model for your transcription provider")
     if not os.environ.get(c["whisper"]["api_key_env"]):
         raise ValueError(
-            f"Set {c['whisper']['api_key_env']} securely in the environment for transcription"
+            f"Set {c['whisper']['api_key_env']} in the project's .env or export it "
+            "in the environment for transcription, then restart the application"
         )
 
 

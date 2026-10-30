@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api import create_app
+from app.config import load_config
 from app.state import RunLock
 from app.video_builder import Cancelled, run_ffmpeg
 
@@ -62,9 +63,10 @@ def test_api_auth_and_shared_processor(monkeypatch):
 
 
 def test_api_requires_key(monkeypatch):
+    config = load_config()
     monkeypatch.delenv("VIDEO_BUILDER_API_KEY", raising=False)
     with pytest.raises(ValueError, match="VIDEO_BUILDER_API_KEY"):
-        create_app()
+        create_app(config=config)
 
 
 def test_ffmpeg_cancellation(tmp_path):
