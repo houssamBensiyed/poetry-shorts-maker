@@ -47,6 +47,8 @@ The provider must accept Bearer-authenticated multipart requests with:
 
 For speech, the response must include `text`, `words` with word/start/end fields, and `segments` with text/start/end fields. The app validates timestamp order and alignment, and restores punctuation from the transcript text. Missing or inconsistent timestamps fail the job rather than being fabricated.
 
+Some responses include standalone punctuation (such as `«` or `»,`) in the words array. These entries are ignored as timing sources; their punctuation is preserved from the full transcript text. Spoken words still require valid timestamps and exact text alignment.
+
 Whisper may estimate a word or segment end slightly beyond the recording. Ends up to 0.5 seconds beyond the actual audio duration are capped at that duration, provided speech starts inside the recording. Larger overruns, invalid timestamps and unordered words still fail validation. Word order is checked before clipping.
 
 The temporary FLAC upload is limited to 24 MB and removed on completion, failure or cancellation, including cancellation during audio preparation. The original buffered audio supplies the final video's audio track. Your provider may impose a smaller limit and may charge for retries.
